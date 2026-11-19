@@ -10,7 +10,9 @@
 // (A WaitBound's `expired()` reads the clock too.)
 // A give-up must throw (or reject with) `waitTimedOut(...)`, and (workspaces-o9o.174 part 3) its guard or its loop must ask a WaitBound
 // (`bound.expired()`, `bound.attempts(n)`), whose bound scales with the measured load; a raw clock comparison or a fixed count is
-// "unscaled". A give-up that rethrows a caught value as it is (`throw error`) hands back
+// "unscaled". "The bound" is decided by the TypeScript checker over the daemon's test project (tsconfig.test.json): the receiver's type
+// must be the WaitBound that helpers/wait-timeout.ts declares, so a foreign object with the same method names, or an alias of one, is
+// not the bound (verify-qa, round 2). A give-up that rethrows a caught value as it is (`throw error`) hands back
 // the failure the wait last saw, an assertion's diff or a command's own error; those are listed by name below, so a new one is a
 // decision and not a silent pass.
 // Excluded as a class: one-shot setTimeout rejects are not censused. A `setTimeout(() => reject(...))` watchdog has no structure that
@@ -46,15 +48,28 @@ const callsNamed = (n: ts.Node, names: readonly string[]): boolean => ts.isCallE
 /** Reads the clock: `Date.now()`, `performance.now()`, or a WaitBound's `expired()` (which compares the clock with its deadline). */
 const readsClock = (n: ts.Node): boolean => contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
   && (x.expression.name.text === "now" || x.expression.name.text === "expired"));
-const isBoundCall = (x: ts.Node): boolean => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
-  && (x.expression.name.text === "expired" || x.expression.name.text === "attempts");
+/** A call of `expired()` or `attempts()` on a receiver whose type, through the TypeScript checker (not its spelling), is the WaitBound
+ *  that helpers/wait-timeout.ts declares, which only waitBound() builds (verify-qa round 2: `other.expired()` on a foreign object, or
+ *  an alias of one, is not the bound). */
+const boundCall = (checker: ts.TypeChecker) => (x: ts.Node): boolean => {
+  if (!ts.isCallExpression(x) || !ts.isPropertyAccessExpression(x.expression)) return false;
+  if (x.expression.name.text !== "expired" && x.expression.name.text !== "attempts") return false;
+  const type = checker.getTypeAtLocation(x.expression.expression);
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  return symbol?.getName() === "WaitBound"
+    && (symbol.declarations ?? []).some((d) => d.getSourceFile().fileName.replace(/\\/g, "/").endsWith("/helpers/wait-timeout.ts"));
+};
 const RELATIONAL = new Set([ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken,
   ts.SyntaxKind.GreaterThanEqualsToken]);
-/** Asks only a WaitBound (workspaces-o9o.174 part 3): the condition calls `bound.expired()` or `bound.attempts(n)`, reads no raw clock
+/** Asks only a WaitBound (workspaces-o9o.174 part 3): the condition calls `bound.expired()` or `bound.attempts(n)` (every such call on
+ *  the bound itself, by type), reads no raw clock
  *  (`Date.now()`, `performance.now()`), and every relational comparison in it (`<`, `<=`, `>`, `>=`) has a bound call on one side. A
  *  mixed condition, `bound.expired() || Date.now() > oldEnd` or `i < bound.attempts(9) && i < 400`, is unscaled (verify-qa, round 1). */
-const asksBound = (n: ts.Node | undefined): boolean => {
+const asksBound = (isBoundCall: (x: ts.Node) => boolean) => (n: ts.Node | undefined): boolean => {
   if (!n || !contains(n, isBoundCall)) return false;
+  // Every expired()/attempts() in the condition is the bound's: a foreign object's beside it makes the condition unscaled.
+  if (contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
+    && (x.expression.name.text === "expired" || x.expression.name.text === "attempts") && !isBoundCall(x))) return false;
   if (contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression) && x.expression.name.text === "now")) return false;
   return !contains(n, (x) => ts.isBinaryExpression(x) && RELATIONAL.has(x.operatorToken.kind)
     && !contains(x.left, isBoundCall) && !contains(x.right, isBoundCall));
@@ -81,10 +96,52 @@ const isIntervalCallback = (p: ts.Node): boolean => ts.isFunctionLike(p) && ts.i
  *  clock or a fixed count instead of asking the bound (part 3); rethrow: hands back a caught failure as it is; bare: any other Error. */
 export interface WaitGiveUp { at: string; kind: "evidenced" | "unscaled" | "rethrow" | "bare" }
 
-/** Every wait give-up in `files` (name → source), classified by what it throws. */
-export function waitGiveUps(files: Record<string, string>): WaitGiveUp[] {
-  return Object.entries(files).flatMap(([file, text]) => {
-    const src = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+/** The declarations the in-memory rows type-check against: the real WaitBound's shape at helpers/wait-timeout.ts, and globals a row may
+ *  use: `bound` (a WaitBound), `other` (a foreign object with the same method names). */
+const ROW_PRELUDE: Record<string, string> = {
+  "/mem/helpers/wait-timeout.ts": "export interface WaitBound { readonly deadline: number; readonly ms: number; expired(): boolean; attempts(n: number): number }\n"
+    + "export declare function waitBound(ms: number): WaitBound;\n",
+  "/mem/globals.d.ts": "declare const bound: import(\"./helpers/wait-timeout\").WaitBound;\n"
+    + "declare function waitBound(ms: number): import(\"./helpers/wait-timeout\").WaitBound;\n"
+    + "declare const other: { readonly deadline: number; expired(): boolean; attempts(n: number): number };\n",
+};
+
+/** A program over in-memory row sources (keyed by bare names) plus ROW_PRELUDE, for the scanner's own rows. */
+function rowProgram(files: Record<string, string>): { program: ts.Program; names: string[] } {
+  const all: Record<string, string> = { ...ROW_PRELUDE };
+  for (const [name, text] of Object.entries(files)) all[`/mem/${name}`] = text;
+  const options: ts.CompilerOptions = {
+    noLib: true, types: [], target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+  };
+  const host = ts.createCompilerHost(options);
+  host.getSourceFile = (fileName, target) => (fileName in all ? ts.createSourceFile(fileName, all[fileName]!, target, true) : undefined);
+  host.fileExists = (fileName) => fileName in all;
+  host.readFile = (fileName) => all[fileName];
+  host.directoryExists = (dir) => Object.keys(all).some((f) => f.startsWith(`${dir.replace(/\/$/, "")}/`));
+  host.realpath = (path) => path;
+  host.getCurrentDirectory = () => "/mem";
+  return { program: ts.createProgram(Object.keys(all), options, host), names: Object.keys(files).map((n) => `/mem/${n}`) };
+}
+
+/** The daemon's test project (tsconfig.test.json), type-checked as the type check does. */
+function testProgram(): ts.Program {
+  const configPath = join(TEST_DIR, "..", "tsconfig.test.json");
+  const parsed = ts.parseJsonConfigFileContent(ts.readConfigFile(configPath, ts.sys.readFile).config, ts.sys, join(TEST_DIR, ".."));
+  return ts.createProgram(parsed.fileNames, { ...parsed.options, noEmit: true });
+}
+
+/** Every wait give-up in the given files of `program` (or, given sources, of an in-memory program over them), classified by what it
+ *  throws and whether it asks a load-scaled WaitBound. Sites are named relative to `root` (the bare row names for in-memory rows). */
+export function waitGiveUps(files: Record<string, string>, given?: { program: ts.Program; fileNames: string[]; root: string }): WaitGiveUp[] {
+  const { program, names, root } = given
+    ? { program: given.program, names: given.fileNames, root: given.root } : { ...rowProgram(files), root: "/mem" };
+  const checker = program.getTypeChecker();
+  const scaled = asksBound(boundCall(checker));
+  return names.flatMap((fileName) => {
+    const src = program.getSourceFile(fileName);
+    if (!src) throw new Error(`not in the program: ${fileName}`);
+    const file = relative(root, fileName);
     const out: WaitGiveUp[] = [];
     const record = (site: ts.Node, error: ts.Expression | undefined, scaled: boolean): void => {
       const kind = error && ts.isCallExpression(error) && ts.isIdentifier(error.expression) && error.expression.text === "waitTimedOut"
@@ -96,11 +153,11 @@ export function waitGiveUps(files: Record<string, string>): WaitGiveUp[] {
         const holder = n.parent;
         const before = ts.isBlock(holder) || ts.isSourceFile(holder) ? holder.statements[holder.statements.indexOf(n) - 1] : undefined;
         const guards = clockGuards(n, isLoop);
-        if (guards.length > 0) record(n, n.expression, guards.every(asksBound));
-        else if (before && isLoop(before) && (sleeps(before) || readsClock(before))) record(n, n.expression, asksBound(loopCondition(before)));
+        if (guards.length > 0) record(n, n.expression, guards.every(scaled));
+        else if (before && isLoop(before) && (sleeps(before) || readsClock(before))) record(n, n.expression, scaled(loopCondition(before)));
       } else if (callsNamed(n, ["reject"])) {
         const guards = clockGuards(n, isIntervalCallback);
-        if (guards.length > 0) record(n, (n as ts.CallExpression).arguments[0], guards.every(asksBound));
+        if (guards.length > 0) record(n, (n as ts.CallExpression).arguments[0], guards.every(scaled));
       }
       ts.forEachChild(n, visit);
     };
@@ -125,6 +182,12 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "exit-or-bound.ts": "async function w() { for (;;) { if (gone !== null || bound.expired()) throw waitTimedOut('x', bound); await nap(); } }",
       "clock-call.ts": "async function w() { for (;;) { if (bound.expired() || overdue(Date.now())) throw waitTimedOut('x', bound); await nap(); } }",
       "flag-loop.ts": "async function w() {\n  while (!done) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "foreign.ts": "async function w() { for (;;) { if (bound.expired() || other.expired()) throw waitTimedOut('x', bound); await nap(); } }",
+      "foreign-only.ts": "async function w() { for (;;) { if (other.expired()) throw waitTimedOut('x', bound); await nap(); } }",
+      "foreign-alias.ts": "async function w() { const b2 = other; for (;;) { if (b2.expired()) throw waitTimedOut('x', bound); await nap(); } }",
+      "foreign-count.ts": "async function w() {\n  for (let i = 0; i < other.attempts(9); i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "lookalike.ts": "interface WaitBound { expired(): boolean }\ndeclare const fake: WaitBound;\nasync function w() { for (;;) { if (fake.expired()) throw waitTimedOut('x', bound); await nap(); } }",
+      "bound-alias.ts": "async function w() { const b3 = bound; for (;;) { if (b3.expired()) throw waitTimedOut('x', b3); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
@@ -147,6 +210,12 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "exit-or-bound.ts:1", kind: "evidenced" },
       { at: "clock-call.ts:1", kind: "unscaled" },   // a raw clock read outside any comparison
       { at: "flag-loop.ts:3", kind: "unscaled" },    // a sleeping loop whose condition asks no bound at all
+      { at: "foreign.ts:1", kind: "unscaled" },        // a foreign object's expired() beside the bound's (verify-qa round 2)
+      { at: "foreign-only.ts:1", kind: "unscaled" },   // the method names alone are not the bound
+      { at: "foreign-alias.ts:1", kind: "unscaled" },  // an alias of a foreign object stays foreign: the checker follows it
+      { at: "foreign-count.ts:3", kind: "unscaled" },
+      { at: "lookalike.ts:3", kind: "unscaled" },      // a type named WaitBound declared anywhere else is not the bound
+      { at: "bound-alias.ts:1", kind: "evidenced" },   // an alias of the bound is the bound
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
@@ -167,13 +236,15 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
   });
 
   it("every wait in the daemon tests gives up through waitTimedOut", () => {
-    const files = Object.fromEntries(testSources(TEST_DIR).map((f) => [relative(TEST_DIR, f), readFileSync(f, "utf8")]));
-    expect(Object.keys(files).length).toBeGreaterThan(1000);   // the population scanned, so a clean result is not an empty walk
-    const rows = waitGiveUps(files);
+    const fileNames = testSources(TEST_DIR);
+    expect(fileNames.length).toBeGreaterThan(1000);   // the population scanned, so a clean result is not an empty walk
+    const program = testProgram();
+    expect(fileNames.filter((f) => !program.getSourceFile(f))).toEqual([]);   // every test source is type-checked, none skipped
+    const rows = waitGiveUps({}, { program, fileNames, root: TEST_DIR });
     expect(at(rows, "bare")).toEqual([]);
     expect(at(rows, "unscaled")).toEqual([]);   // part 3: every give-up asks a load-scaled bound, never the raw clock or a fixed count
     expect(at(rows, "evidenced").length).toBeGreaterThanOrEqual(40);   // the give-ups found, so a clean result is not a blind scanner
     // Rethrows hand back the failure the wait last saw (an assertion's diff; the CLI's own error after its retries), kept as it is.
     expect(at(rows, "rethrow").sort()).toEqual(["helpers/eval-rig-session.ts:285", "pi-usage-cost.test.ts:168"]);
-  });
+  }, 300_000);   // type-checks the whole test project once
 });
