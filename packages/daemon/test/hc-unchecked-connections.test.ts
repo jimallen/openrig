@@ -18,7 +18,8 @@
 // constructor (code built from strings at run time); property names computed at run time (`net[name](...)`, `obj[key]` holding the class);
 // options that reach an http request with no object setting socketPath in view (a parameter, or a call's result, typed with a declared
 // options type such as RequestOptions whose socketPath is optional): the object that reaches the call is judged, a variable followed to
-// its initializer, and only an object nowhere in view is left to its type (round 3); wrappers inside third-party packages (their calls resolve to their own
+// its initializer, and only an object nowhere in view is left to its type (round 3);
+// alias chains and nested spreads deeper than 20 steps, which carriesSocketPath does not follow (Jim, 2026-11-19: merge, state the limit); wrappers inside third-party packages (their calls resolve to their own
 // .d.ts); and the CLI, which installs no pin. It catches the honest mistake of reaching the core without the check, not an adversary.
 import fs from "node:fs";
 import nodePath from "node:path";
