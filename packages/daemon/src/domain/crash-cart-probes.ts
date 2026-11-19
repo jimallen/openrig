@@ -1,9 +1,6 @@
-// Crash-cart C3 — the REAL probe adapters wired into resolveDaemonState (main.ts). The classification
-// logic is unit-tested (injected fetch); isProcessAlive/readDaemonJson are thin node-API wrappers
-// proven by the real-daemon-down run.
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { credentialFileOpsFrom, DAEMON_STATE_POLICY, readOwnFileWith } from "./credential-file.js";
-import { join } from "node:path";
+// Crash-cart C3 — the probe rules: how a /healthz fetch rejection is classified (unit-tested with an injected fetch) and how
+// daemon.json is parsed. Their I/O, the daemon.json read and the process-liveness signal, lives in
+// src/adapters/node-crash-cart-probes.ts (workspaces-o9o.161), wired through the crash-cart surface.
 import type { DaemonStateFile, HealthzProbeResult } from "./crash-cart-detect.js";
 
 /** Collect the TERMINAL ATTEMPTS from a rejection tree — the leaf error nodes that represent an actual
@@ -85,31 +82,10 @@ export async function probeHealthz(url: string, deps: ProbeDeps): Promise<Health
   }
 }
 
-/** True if `pid` is a live process. `process.kill(pid, 0)` throws ESRCH when absent, EPERM when it
- *  exists but we can't signal it (still alive). */
-export function isProcessAlive(pid: number): boolean {
+/** Parse daemon.json's text into the {pid,port,host} record, or undefined when it is malformed (treated as "no state file"). */
+export function parseDaemonState(content: string): DaemonStateFile | undefined {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-const daemonStateOps = credentialFileOpsFrom(
-  { constants, openSync, fstatSync, readSync, fchmodSync, closeSync, lstatSync, realpathSync },
-  () => (typeof process.getuid === "function" ? process.getuid() : -1),
-);
-
-/** Read + parse `$OPENRIG_HOME/daemon.json` → the {pid,port,host} record, or undefined if absent or
- *  malformed (treated as "no state file"). */
-export function readDaemonJson(openrigHome: string): DaemonStateFile | undefined {
-  // workspaces-o9o.160: under the credential rule's procedure, with the node:fs this module already imports (moving it is o9o.161):
-  // a link or another user's daemon.json is not used; group/other write on our own is narrowed (sparky's live one was 0664).
-  const read = readOwnFileWith(daemonStateOps, join(openrigHome, "daemon.json"), DAEMON_STATE_POLICY);
-  if (!read.ok) return undefined;
-  try {
-    const j = JSON.parse(read.content) as { pid?: unknown; port?: unknown; host?: unknown };
+    const j = JSON.parse(content) as { pid?: unknown; port?: unknown; host?: unknown };
     if (typeof j.pid === "number" && typeof j.port === "number") {
       return { pid: j.pid, port: j.port, host: typeof j.host === "string" ? j.host : undefined };
     }

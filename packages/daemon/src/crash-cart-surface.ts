@@ -5,4 +5,5 @@
 export * from "./domain/crash-cart-discovery.js";
 export * from "./domain/crash-cart-detect.js";
 export * from "./domain/crash-cart-probes.js";
+export * from "./adapters/node-crash-cart-probes.js";
 export * from "./domain/crash-cart-emit.js";

@@ -80,7 +80,6 @@ src/domain/context-usage-store.ts node:fs value upstream
 src/domain/context-usage-store.ts node:os value upstream
 src/domain/continuity-policy-materializer.ts node:fs value upstream
 src/domain/crash-cart-discovery.ts better-sqlite3 value upstream
-src/domain/crash-cart-probes.ts node:fs value upstream
 src/domain/culture-file-guard.ts node:fs value fork
 src/domain/current-work.ts better-sqlite3 type upstream
 src/domain/current-work.ts node:fs value upstream

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SettingsStore, SETTINGS_VALID_KEYS } from "../src/domain/user-settings/settings-store.js";
-import { readDaemonJson } from "../src/domain/crash-cart-probes.js";
+import { readDaemonJson } from "../src/adapters/node-crash-cart-probes.js";
 
 let dir: string;
 beforeEach(() => { dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "routing-domain-"))); });
