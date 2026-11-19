@@ -446,6 +446,13 @@ export class HcCoreWatch {
   /** The core id the first successful `hello` pinned. */
   pinnedCoreId(): string | undefined { return this.coreId; }
 
+  /** workspaces-87f (verify-sec, attempt 2; CoS ruling): the first hello carrying an id on ANY handshake pins it: the watch's probe, its
+   *  stream, or a call's own (pinCallsToCore). Called only with a hello that has passed verifyHello against the current pin, so it sets
+   *  the pin when none is set and never changes one. */
+  pinFromHello(hello: HcHello): void {
+    this.coreId ??= hello.core?.id;
+  }
+
   /** First connection attempt. Resolves when it has streamed or found the core unavailable (the watch then keeps
    *  retrying in the background); rejects with HcCoreRefusedError when the core is refused. */
   start(): Promise<HcWatchState> {
@@ -559,7 +566,7 @@ export class HcCoreWatch {
       if (notMine) throw new HcCoreRefusedError(notMine, "core_not_this_instance");
     }
     verifyHello(presence.hello, { ...this.options.pin, coreId: this.coreId });
-    this.coreId ??= answeringId;
+    this.pinFromHello(presence.hello);
 
     const generation = ++this.generation;
     let resolveClosed: (why: string) => void = () => undefined;
@@ -601,6 +608,8 @@ export class HcCoreWatch {
       if (watchdog) clearTimeout(watchdog);
       throw err;
     }
+    // The stream's own handshake pins too: a core that first sends its id here is held to it from now on.
+    this.pinFromHello(stream.hello);
     live = stream;
     this.stream = stream;
     const coreId = stream.hello.core?.id;
@@ -657,12 +666,14 @@ export interface ConnectHcCoreOptions {
 
 /** Make every later `hello` to this socket (every `call`, attach and size watch of this build) pass the pin, not only the first:
  *  a core swapped for another version or another core id after startup is refused as an HcError of the same kind, so a read of
- *  "absent" from the wrong core can never be taken for the seat's. The core id is the one the watch saw first (none yet if the
- *  core was down at start: then only the version is checked, until the watch has seen one). Returns the function that lifts it. */
-export function pinCallsToCore(socketPath: string, watch: Pick<HcCoreWatch, "pinnedCoreId">, pin: HcCorePin = {}): () => void {
+ *  "absent" from the wrong core can never be taken for the seat's. The core id is the first one any handshake saw (none yet if the
+ *  core was down at start, or has sent none: then only the version is checked, until a hello carries one). A call's own hello pins
+ *  too (workspaces-87f, CoS ruling): once it has carried an id, a later hello without one is refused. Returns the function that lifts it. */
+export function pinCallsToCore(socketPath: string, watch: Pick<HcCoreWatch, "pinnedCoreId" | "pinFromHello">, pin: HcCorePin = {}): () => void {
   setHcHelloCheck(socketPath, (hello) => {
     try {
       verifyHello(hello, { ...pin, coreId: watch.pinnedCoreId() });
+      watch.pinFromHello(hello);
     } catch (err) {
       if (err instanceof HcCoreRefusedError) throw new HcError(err.message, err.kind, -32000);
       throw err;

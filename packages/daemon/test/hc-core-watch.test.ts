@@ -3,8 +3,8 @@ import { createServer, type Server, type Socket } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HcHello } from "../src/adapters/hc-client.js";
-import { EMPTY_HC_VIEW, HC_HEARTBEAT_INTERVAL_MS, HC_HEARTBEAT_TIMEOUT_MS, HcCoreRefusedError, HcCoreWatch, lossReason, probeCore, reduceHcView, turnsCompleted, verifyHello, type HcNotice, type HcStreamMessage, type HcView, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
+import { HcClient, type HcHello } from "../src/adapters/hc-client.js";
+import { EMPTY_HC_VIEW, HC_HEARTBEAT_INTERVAL_MS, HC_HEARTBEAT_TIMEOUT_MS, HcCoreRefusedError, HcCoreWatch, lossReason, pinCallsToCore, probeCore, reduceHcView, turnsCompleted, verifyHello, type HcNotice, type HcStreamMessage, type HcView, type HcViewTerminal } from "../src/adapters/hc-core-watch.js";
 import { HC_TESTED_VERSION } from "../src/adapters/hc-version.js";
 import { waitTimedOut } from "./helpers/wait-timeout.js";
 
@@ -378,6 +378,97 @@ describe("HcCoreWatch against a scripted core", () => {
     await until(() => watch.state() === "refused", "the refusal");
     expect(core.subscribes).toBe(1);
     expect(warnings).toEqual([]);  // refused, never first logged as joined
+  });
+  // verify-sec, 87f attempt 2: an id first seen on the STREAM handshake was never pinned, and a test that shared one hello reply
+  // across the probe and the stream hid it. CoS ruling: the first hello carrying an id on ANY handshake (probe, stream, per call)
+  // pins it. Every row below gives each handshake its own reply, in order: probe, stream, then reconnects or calls.
+  const inOrder = (...replies: (() => Record<string, unknown>)[]) => {
+    let next = 0;
+    return () => replies[Math.min(next++, replies.length - 1)]!();
+  };
+  const withId = (id: string) => () => ({ ...hello({ core: { id, name: "n" } }) });
+  it("an id first seen on the stream handshake is pinned (probe without an id, stream with one): a later call without an id is refused and runs nothing", async () => {
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: () => undefined });
+    core.helloReply = inOrder(idless, withId("core-a"), idless);
+    let ran = 0;
+    core.methodsAnswered["terminal.list"] = () => { ran++; return { result: { terminals: [] } }; };
+    await watch.start();
+    const lift = pinCallsToCore(core.socketPath, watch);
+    try {
+      const served = await new HcClient(core.socketPath).call("terminal.list").then(() => "served", (err: unknown) => err);
+      expect(ran).toBe(0);  // verify-sec's symptom: terminal.list ran on a core that sent no id after one had
+      expect(served).toMatchObject({ name: "HcError", kind: "core_changed" });
+      expect(watch.pinnedCoreId()).toBe("core-a");
+    } finally {
+      lift();
+    }
+  });
+  it("an id first seen on the stream handshake is pinned: a reconnect whose hello has no id is refused (core_changed), and stops", async () => {
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: () => undefined });
+    core.helloReply = inOrder(idless, withId("core-a"), idless);
+    await watch.start();
+    core.dropConnections();
+    await until(() => watch.state() === "refused", "the refusal");
+    expect(core.subscribes).toBe(1);
+  });
+  it("an id on the probe, then a stream handshake without one: refused (core_changed), never reported connected", async () => {
+    const { core, notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }) });
+    core.helloReply = inOrder(withId("core-a"), idless);
+    await expect(watch.start()).rejects.toMatchObject({ kind: "core_changed" });
+    expect(notices.filter((n) => n.kind === "connected")).toEqual([]);
+  });
+  it("an id first seen on a CALL's handshake pins the watch: the next call without an id is refused, and so is a reconnect without one", async () => {
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: () => undefined });
+    core.helloReply = inOrder(idless, idless, withId("core-a"), idless);
+    let ran = 0;
+    core.methodsAnswered["terminal.list"] = () => { ran++; return { result: { terminals: [] } }; };
+    await watch.start();
+    expect(watch.pinnedCoreId()).toBeUndefined();
+    const lift = pinCallsToCore(core.socketPath, watch);
+    try {
+      await expect(new HcClient(core.socketPath).call("terminal.list")).resolves.toEqual({ terminals: [] });
+      expect(watch.pinnedCoreId()).toBe("core-a");
+      await expect(new HcClient(core.socketPath).call("terminal.list")).rejects.toMatchObject({ name: "HcError", kind: "core_changed" });
+      expect(ran).toBe(1);
+      core.dropConnections();
+      await until(() => watch.state() === "refused", "the refusal of a reconnect without an id");
+    } finally {
+      lift();
+    }
+  });
+  it("a call to another core after the pin is refused, and the pin does not move to it (probe and stream core-a, call core-b, then core-a)", async () => {
+    const { core, watch } = await setup();
+    core.helloReply = inOrder(withId("core-a"), withId("core-a"), withId("core-b"), withId("core-a"));
+    let ran = 0;
+    core.methodsAnswered["terminal.list"] = () => { ran++; return { result: { terminals: [] } }; };
+    await watch.start();
+    const lift = pinCallsToCore(core.socketPath, watch);
+    try {
+      await expect(new HcClient(core.socketPath).call("terminal.list")).rejects.toMatchObject({ name: "HcError", kind: "core_changed" });
+      expect(watch.pinnedCoreId()).toBe("core-a");
+      await expect(new HcClient(core.socketPath).call("terminal.list")).resolves.toEqual({ terminals: [] });
+      expect(ran).toBe(1);
+    } finally {
+      lift();
+    }
+  });
+  it("control: never any id on any handshake (probe, stream, calls) is joined with the warning and every call is served", async () => {
+    const warnings: string[] = [];
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: (m: string) => warnings.push(m) });
+    core.helloReply = idless;
+    let ran = 0;
+    core.methodsAnswered["terminal.list"] = () => { ran++; return { result: { terminals: [] } }; };
+    await watch.start();
+    const lift = pinCallsToCore(core.socketPath, watch);
+    try {
+      await new HcClient(core.socketPath).call("terminal.list");
+      await new HcClient(core.socketPath).call("terminal.list");
+      expect(ran).toBe(2);
+      expect(watch.pinnedCoreId()).toBeUndefined();
+      expect(warnings.join("\n")).toContain("does not report its id");
+    } finally {
+      lift();
+    }
   });
   it("pins the id this instance's state dir names before any connect, and streams from that core", async () => {
     const { notices, watch } = await setup({ thisInstanceCore: () => ({ kind: "id", id: "core-a", file: "/s/herdr-core/default/core.json" }) });
