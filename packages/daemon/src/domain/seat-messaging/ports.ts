@@ -74,11 +74,13 @@ export interface SeatGate {
  *  (`draft`, Jim's rule: never touched, and the message goes the moment it clears), or the process in its terminal is not its agent
  *  (`agent_absent`: a paste into a login shell runs each line as a command, so nothing is typed until the agent is back), or its screen shows no composer at all, such as a picker (`screen_unreadable`), or the message is too long to paste and the seat has no socket
  *  (`long_no_socket`: decision 35, it goes when the socket is back), or a Pi or OMP runner already holds every id of the text (`runner_held`, OF-214:
- *  its gate log has the intent and no record yet, so a copy would only print in the pane and be dropped). */
+ *  its gate log has the intent and no record yet, so a copy would only print in the pane and be dropped), or the runner in the terminal is not
+ *  yet reading its input (`runner_starting`, workspaces-d7l: text typed before its pane editor takes bracketed pastes arrives split, the body
+ *  without its marker, and the gate cannot stop a copy). */
 export type LastHopResult =
   /** `carried`: the ids this attempt put in the text, when that is fewer than it was given. The rest were not attempted. */
   | { readonly kind: "sent"; readonly carried?: readonly MessageId[] }
-  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" | "far_not_gated" | "runner_held" }
+  | { readonly kind: "paused"; readonly reason: "busy" | "blocked" | "guard_held" | "seat_stopped" | "draft" | "agent_absent" | "screen_unreadable" | "long_no_socket" | "far_not_gated" | "runner_held" | "runner_starting" }
   /** The seat is gone for good, by the word of whoever owns it. */
   | { readonly kind: "gone"; readonly reason: string }
   | { readonly kind: "refused"; readonly reason: string };

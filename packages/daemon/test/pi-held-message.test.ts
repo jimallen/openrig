@@ -49,10 +49,10 @@ describe("a Pi seat that holds a message through a long turn (OF-214)", () => {
     const piRoot = join(home, "pi");
     const paths = piSeatPaths(piRoot, SEAT);
     mkdirSync(paths.seatRoot, { recursive: true });
-    writeFileSync(paths.runnerStatePath, JSON.stringify({ ready: true, updatedAt: "1970-01-01T00:00:00.000Z", seatGate: 1 }));
+    writeFileSync(paths.runnerStatePath, JSON.stringify({ ready: true, launchId: "l1", updatedAt: "1970-01-01T00:00:00.000Z", seatGate: 1 }));
     gate = SeatGateStore.open(seatGateLogPath(paths.seatRoot));
     store = new MessageStore(db);
-    const foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+    const foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--launch-id", "l1", "--no-approve"], cwd: "/w" };
     ports = new RuntimeSeatPorts({
       db, rows: store, hookStore: new HookSeenStore(seatGateRoot(home)), stateRoots: { pi: piRoot, omp: join(home, "omp") },
       client: { call: async <T,>(method: string): Promise<T> => (method === "terminal.get" ? { state: "live", status: { state: "working" }, foreground } : { text: "[pi-runner] READY\n" }) as T },

@@ -5,7 +5,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { HcAttach } from "../src/adapters/hc-attach.js";
 import { HcInput } from "../src/adapters/hc-input.js";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
@@ -425,6 +425,32 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await state(s, "m1", "received", 40_000);
       expect(readFileSync(pi.effects, "utf8").split("\n").filter(Boolean)).toHaveLength(1);
       expect(existsSync(canary)).toBe(false);
+    }, 120_000);
+
+    // workspaces-d7l: twice under load this row saw Pi get the message twice. Load stretches one window: the runner is the terminal's foreground
+    // (so the pump counts the agent as present) for seconds before it reads its input. This holds that window open on purpose, by timing and
+    // not by load: a preload with a top-level await keeps the real runner's start waiting while its argv already names it.
+    it("d7l: a Pi runner in the foreground that is not yet reading its input (a slow start, held open on purpose): the message arrives once", async () => {
+      const s = fixture([], "pi");
+      const pi = fakePi(s.dir);
+      const root = join(HOME, "state", "pi");
+      seedPiFixtureCredential(root, s.name, "openrouter");
+      mkdirSync(join(root, s.name), { recursive: true });
+      writeFileSync(join(root, s.name, "runner-state.json"), JSON.stringify({ ready: true, updatedAt: new Date().toISOString(), aliveAt: new Date().toISOString(), seatGate: 1 }));
+      await core.client.call("terminal.run", { argv: ["/bin/bash", "-l"], name: s.address, cwd: s.dir, env: { PATH: `${pi.bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(core.root, "h"), HISTFILE: join(s.dir, "history") }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
+      const slowStart = join(s.dir, "slow-start.mjs");
+      writeFileSync(slowStart, "await new Promise((resolve) => setTimeout(resolve, 4000));\n");
+      s.accept("m1", "hello from d7l");
+      daemon(s);
+      await hopSaw(s, "paused:agent_absent m1");
+      await core.client.call("terminal.send", { terminal: s.address,
+        text: `cd ${resolve(here, "..")} && exec env PATH=${pi.bin}:$PATH node --import tsx --import ${pathToFileURL(slowStart).href} ${RUNNER} --session-name ${s.name} --state-root ${root} --cwd ${s.dir} --launch-id l2 --no-approve --model openrouter/fixture`, force: true });
+      await until(() => screen(s), (t) => t.includes("[pi-runner] READY"), "the runner up", 30_000);
+      await state(s, "m1", "received", 40_000);
+      await wait(1_500); // anything the pump typed during the held start has been read by now
+      const effects = readFileSync(pi.effects, "utf8").split("\n").filter(Boolean);
+      expect(effects, `effects ${JSON.stringify(effects)}; hops ${JSON.stringify(s.hop())}`).toHaveLength(1);
     }, 120_000);
 
     // The launch `hc-input.ts` types for a sourced seat: `( . cmd )`, so the agent runs inside a forked subshell, whose argv is the login shell's.

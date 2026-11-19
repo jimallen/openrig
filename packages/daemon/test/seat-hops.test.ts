@@ -756,14 +756,31 @@ describe("the hops", () => {
     const pi = () => new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null, inFlight: (seat, marker) => { asked.push({ seat, marker }); return held.has(`${marker.id}:${marker.nonce}`); } });
     beforeEach(() => {
       held = new Set(); asked.length = 0;
-      state = { seatGate: 1 }; screen = "[pi-runner] READY\n";
-      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+      state = { ready: true, launchId: "l1", seatGate: 1 }; screen = "[pi-runner] READY\n";
+      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--launch-id", "l1", "--no-approve"], cwd: "/w" };
     });
 
     it("every paste carries the marker", async () => {
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual([`paste:${text()}`]);
     });
+    // workspaces-d7l: the runner is the foreground (so the agent counts as present) before it reads its input; text typed then arrives split,
+    // the body without its marker, and the gate cannot stop a copy. Nothing is typed until this runner's own sidecar says it is ready.
+    it.each([
+      ["a sidecar an earlier runner left, still saying ready", { ready: true, seatGate: 1 }],
+      ["this launch's pending sidecar, not ready yet", { ready: false, launchId: "l1", seatGate: 1 }],
+      ["a ready sidecar of another launch", { ready: true, launchId: "l0", seatGate: 1 }],
+    ] as const)("d7l: %s: paused as runner_starting, nothing typed", async (_label, sidecar) => {
+      state = { ...sidecar };
+      await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "runner_starting" });
+      expect(calls).toEqual([]);
+    });
+    it("d7l: a foreground runner with no --launch-id to match: paused as runner_starting, nothing typed", async () => {
+      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+      await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "runner_starting" });
+      expect(calls).toEqual([]);
+    });
+
     it("a dead runner gets nothing, with its sidecar still saying ready: a paste into the shell runs each line", async () => {
       foreground = { pid: 1, name: "-bash", argv: ["-bash"], cwd: "/w" };
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "agent_absent" });
@@ -774,9 +791,9 @@ describe("the hops", () => {
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
     });
     it("a paste still open pauses; a dialog pauses; a sidecar it cannot read pauses", async () => {
-      state = { seatGate: 1, pasteOpen: true };
+      state = { ready: true, launchId: "l1", seatGate: 1, pasteOpen: true };
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "busy" });
-      state = { seatGate: 1 }; status = "blocked";
+      state = { ready: true, launchId: "l1", seatGate: 1 }; status = "blocked";
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "blocked" });
       status = "idle"; state = null;
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "paused", reason: "seat_stopped" });
@@ -821,7 +838,7 @@ describe("the hops", () => {
       });
     });
     it("a leftover line with this marker gets Enter alone (M8); any other leftover holds", async () => {
-      state = { seatGate: 1, pasteLeftover: true };
+      state = { ready: true, launchId: "l1", seatGate: 1, pasteLeftover: true };
       screen = `> ${text()}\n`;
       await expect(pi().attempt(message)).resolves.toEqual({ kind: "sent" });
       expect(calls).toEqual(["keys:Enter"]);
@@ -860,9 +877,9 @@ describe("the hops", () => {
       expect(calls).toEqual([`paste:${labelledText()}`]);
     });
     it("Pi", async () => {
-      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--no-approve"], cwd: "/w" };
+      foreground = { pid: 1, name: "node", argv: ["node", "/lib/daemon/dist/adapters/pi-runner.js", "--session-name", SEAT, "--launch-id", "l1", "--no-approve"], cwd: "/w" };
       screen = "[pi-runner] READY\n";
-      const state: Partial<PiRunnerState> = { seatGate: 1 };
+      const state: Partial<PiRunnerState> = { ready: true, launchId: "l1", seatGate: 1 };
       await new PiSeatHop({ rows: store, guard, client, input, runnerState: () => state as PiRunnerState | null, inFlight: () => false }).attempt(labelled);
       expect(calls).toEqual([`paste:${labelledText()}`]);
     });

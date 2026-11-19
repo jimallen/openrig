@@ -134,7 +134,7 @@ export function guarded(guard: HopGuard, seat: string, fn: () => Promise<LastHop
 /** The processes in a terminal's foreground group, led by `pgid`. Empty when it is not the foreground group now, or it cannot be read. */
 export type ForegroundGroupOf = (pgid: number) => Promise<readonly ForegroundProgram[]>;
 
-async function readSeat(client: HopClient, seat: string, runtime: SeatRuntime, groupOf?: ForegroundGroupOf): Promise<{ status: string | null; screen: string } | LastHopResult> {
+async function readSeat(client: HopClient, seat: string, runtime: SeatRuntime, groupOf?: ForegroundGroupOf): Promise<{ status: string | null; screen: string; argv: readonly string[] } | LastHopResult> {
   const terminal = hcTerminalName(seat);
   try {
     const found = await client.call<HcTerminal>("terminal.get", { terminal });
@@ -145,7 +145,7 @@ async function readSeat(client: HopClient, seat: string, runtime: SeatRuntime, g
       if (!inGroup) return { kind: "paused", reason: "agent_absent" };
     }
     const { text } = await client.call<{ text: string }>("terminal.read", { terminal, lines: 200 });
-    return { status: found.status?.state ?? null, screen: text };
+    return { status: found.status?.state ?? null, screen: text, argv: found.foreground?.argv ?? [] };
   } catch (error) {
     if (error instanceof HcError && error.kind === "not_found") return { kind: "paused", reason: "seat_stopped" };
     if (error instanceof HcUnavailableError || error instanceof HcOutcomeUnknownError) return { kind: "paused", reason: "seat_stopped" };
@@ -389,6 +389,18 @@ export interface PiHopDeps {
   runnerState(seat: string): PiRunnerState | null;
 }
 
+/**
+ * workspaces-d7l: does the runner in the terminal's foreground read its input now? Its own sidecar must say so: the sidecar's launchId is the
+ * `--launch-id` in the foreground argv (a sidecar left by an earlier runner, or the pending one the launch writes before this runner starts,
+ * does not count), and `ready` is true, which the runner writes only after its pane editor is in raw, bracketed-paste mode (the editor is
+ * wired in the same synchronous run of main, before Pi's get_state answer can set ready).
+ */
+export function runnerReadsInput(state: Pick<PiRunnerState, "ready" | "launchId">, foregroundArgv: readonly string[]): boolean {
+  const at = foregroundArgv.indexOf("--launch-id");
+  const launchId = at >= 0 ? foregroundArgv[at + 1] : undefined;
+  return state.ready === true && launchId !== undefined && state.launchId === launchId;
+}
+
 /** Pi and OMP: a paste the runner's gate reads. Pi refusing a prompt (M6: during compaction) clears the runner's intent, so the next
  *  attempt passes: the pump's retry is the answer, and nothing here needs to know about compaction. */
 export class PiSeatHop implements LastHop {
@@ -403,6 +415,9 @@ export class PiSeatHop implements LastHop {
       if (seat.status === "blocked") return { kind: "paused", reason: "blocked" };
       const state = this.deps.runnerState(message.seat);
       if (state === null) return { kind: "paused", reason: "seat_stopped" };
+      // workspaces-d7l: type only into the runner in the foreground once it reads its own input. Before that the text arrives split (the body as
+      // a line of its own, without its marker), so the gate cannot stop a copy, and every attempt typed meanwhile reaches the agent.
+      if (!runnerReadsInput(state, seat.argv)) return { kind: "paused", reason: "runner_starting" };
       // OF-214: the runner already holds every id of this text (Pi took it mid-turn and shows it when the turn's tool calls end, which can be
       // a long while). A copy would print in the pane and be dropped: wait without typing. A text with one id the runner has not met still goes.
       if (message.ids.every((id) => this.deps.inFlight(message.seat, { id, nonce: this.deps.rows.nonceOf(id)! }))) return { kind: "paused", reason: "runner_held" };
