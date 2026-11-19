@@ -78,6 +78,19 @@ describe("a Pi seat that holds a message through a long turn (OF-214)", () => {
 
   const accept = (id: string, body: string) => store.accept({ id: messageId(id), seat: SEAT, sender: "exec-cos@eztrack", body });
 
+  it("d7l: a runner that is not reading its input yet: nothing typed, the row waits under runner_starting, and goes once it is ready", async () => {
+    const paths = piSeatPaths(join(home, "pi"), SEAT);
+    writeFileSync(paths.runnerStatePath, JSON.stringify({ ready: false, launchId: "l1", updatedAt: "1970-01-01T00:00:00.000Z", seatGate: 1 }));
+    accept("d7l00001", "hello");
+    await pump.tick();
+    expect(typed).toHaveLength(0);
+    expect(store.headOf(SEAT)).toMatchObject({ attempts: 0, pauseReason: "runner_starting" });
+    writeFileSync(paths.runnerStatePath, JSON.stringify({ ready: true, launchId: "l1", updatedAt: "1970-01-01T00:00:00.000Z", seatGate: 1 }));
+    now += MIN;
+    await pump.tick();
+    expect(typed).toHaveLength(1);
+  });
+
   it("types the message once, however long Pi keeps it, and records it received the moment Pi shows it", async () => {
     accept("6a82166e", "CoS 14:00Z: stop the guard run");
     await pump.tick();
