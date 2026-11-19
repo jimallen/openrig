@@ -421,6 +421,9 @@ process.exit(result.status ?? 1);
   env.PATH = `${tmuxWrapperDir}${delimiter}${originalPath}`;
   // Forced-local: never resolve/attach the shared fleet kernel.
   env.OPENRIG_NO_KERNEL = "1";
+  // workspaces-xuy: a scenario daemon is a subprocess, outside the P37 fetch guard, so its plugin auto-fetch would be a real
+  // request to GitHub. Set after the inherited env was copied, so an inherited value has no say.
+  env.OPENRIG_NO_PLUGIN_FETCH = "1";
   // OF-232: a scenario daemon binds loopback only. With no bind intent the daemon takes its DEFAULT plan, loopback plus the host's own
   // Tailscale address, which made every scenario daemon reachable on the tailnet (unauthenticated) and gave it a second address to
   // collide on. OPENRIG_BIND_HOST is the daemon's dedicated bind-intent env; set here, after the inherited env was copied, it also

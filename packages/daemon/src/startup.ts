@@ -282,6 +282,9 @@ interface DaemonOptions {
   webUiEnabled?: boolean;
   /** Clock and delays of the post-restart prompt (tests); absent = 20 s first delay, 60 s retries, 30 min window. */
   postRestartTiming?: PostRestartWiringOptions["timing"];
+  /** The client the plugin auto-fetch asks for the latest openrig-core release (tests); null turns the fetch off. Absent = a
+   *  real fetch, unless OPENRIG_NO_PLUGIN_FETCH=1 (test runs set it, workspaces-xuy) turns it off. */
+  pluginReleaseClient?: import("./domain/plugin-vendor-service.js").HttpClient | null;
 }
 
 interface DaemonResult {
@@ -1107,7 +1110,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const userPluginsDir = getDefaultOpenRigPath("plugins");
     const { nodePluginVendorFs } = await import("./adapters/plugin-vendor-fs.js");
     const realFs = nodePluginVendorFs();
-    const httpClient = async (url: string, opts?: { timeoutMs?: number }) => {
+    const fetchClient = async (url: string, opts?: { timeoutMs?: number }) => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), opts?.timeoutMs ?? 5000);
       try {
@@ -1117,6 +1120,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         clearTimeout(timer);
       }
     };
+    // workspaces-xuy: a test run's daemons never ask GitHub (OPENRIG_NO_PLUGIN_FETCH=1, set by the test setup and by the
+    // helpers that spawn test daemons); an injected client wins over both.
+    const httpClient = opts?.pluginReleaseClient !== undefined
+      ? opts.pluginReleaseClient
+      : process.env.OPENRIG_NO_PLUGIN_FETCH === "1" ? null : fetchClient;
     const vendorService = new PluginVendorService({
       vendoredAssetsDir,
       userPluginsDir,

@@ -64,6 +64,10 @@ for (const key of [
 // XDG_RUNTIME_DIR before any state dir (hc-client.ts resolveHcSocket), so that is dropped below with the other XDG paths.
 // An in-process daemon must never start a core under a test's scratch HOME and leave it behind.
 process.env["OPENRIG_HC_NO_START_CORE"] = "1";
+// workspaces-xuy: an in-process daemon (createDaemon) must not ask GitHub for the openrig-core plugin release. The P37 fetch
+// guard below would refuse it, but that is a refusal logged by every daemon a test starts, not an attempt that never happens.
+// A test that drives the fetch path injects its own client (createDaemon's pluginReleaseClient).
+process.env["OPENRIG_NO_PLUGIN_FETCH"] = "1";
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("HC_")) delete process.env[key];
 }

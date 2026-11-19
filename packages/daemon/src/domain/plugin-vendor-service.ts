@@ -74,7 +74,9 @@ export interface PluginVendorServiceDeps {
   vendoredAssetsDir: string;
   userPluginsDir: string;
   fs: PluginVendorFs;
-  httpClient: HttpClient;
+  /** Asks for the latest plugin release. null turns the auto-fetch off: attemptAutoFetch makes no request and logs nothing,
+   *  and the vendored copy stays the authority, as it is on every fetch outcome (test runs, workspaces-xuy). */
+  httpClient: HttpClient | null;
   logger?: (...args: unknown[]) => void;
   /** Where a copy that still differs from the package after a refresh is reported. Defaults to logger. */
   errorLogger?: (...args: unknown[]) => void;
@@ -100,7 +102,7 @@ export class PluginVendorService {
   private vendoredAssetsDir: string;
   private userPluginsDir: string;
   private fs: PluginVendorFs;
-  private httpClient: HttpClient;
+  private httpClient: HttpClient | null;
   private logger: (...args: unknown[]) => void;
   private errorLogger: (...args: unknown[]) => void;
 
@@ -435,12 +437,14 @@ export class PluginVendorService {
    * Attempt to fetch the latest plugin tree from
    * github.com/mvschwarz/openrig-plugins. Tolerates 404, network errors,
    * and timeouts silently — vendored copy is ALWAYS the fallback.
-   * Logs outcome for operator observability.
+   * Logs outcome for operator observability. With no client (auto-fetch off) it does nothing.
    */
   async attemptAutoFetch(pluginName: string): Promise<void> {
+    const client = this.httpClient;
+    if (client === null) return;
     const url = `${REPO_BASE}/releases/latest/download/${pluginName}.tar.gz`;
     try {
-      const response = await this.httpClient(url, { timeoutMs: DEFAULT_TIMEOUT_MS });
+      const response = await client(url, { timeoutMs: DEFAULT_TIMEOUT_MS });
       if (!response.ok) {
         if (response.status === 404) {
           this.logger(`[plugin-vendor] fetch ${pluginName} returned 404 (repo empty or release not published yet); falling back to vendored`);

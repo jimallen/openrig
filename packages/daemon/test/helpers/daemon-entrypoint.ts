@@ -149,6 +149,8 @@ export function testDaemonEnv(
     // A test daemon never starts an hc core under its scratch HOME and leaves it behind (as test/hermetic-env.setup.ts sets for
     // in-process daemons).
     OPENRIG_HC_NO_START_CORE: "1",
+    // A spawned daemon is outside the P37 fetch guard, so its plugin auto-fetch would be a real request to GitHub (workspaces-xuy).
+    OPENRIG_NO_PLUGIN_FETCH: "1",
     ...(opts.privateHcSocket !== undefined ? { HC_SOCKET: opts.privateHcSocket } : {}),
     OPENRIG_NO_KERNEL: "1",
     OPENRIG_HOME: opts.home,
