@@ -53,7 +53,7 @@ describe("workspaces-o9o.161: the domain reaches another daemon only through its
     })).toEqual(["a.ts:1", "a.ts:3", "b.ts:1"]);
   });
 
-  it("RED: no domain file of the hosts context, and no caller moved onto the port, names HTTP", () => {
+  it("no domain file of the hosts context, and no caller moved onto the port, names HTTP", () => {
     const scanned = [...new Set([...hostsContextFiles(), ...CALLERS])];
     expect(scanned.length).toBeGreaterThan(CALLERS.length);   // the hosts folder was read, not only the named callers
     const files = Object.fromEntries(scanned.map((f) => [f, readFileSync(join(SRC, f), "utf8")]));

@@ -1394,7 +1394,7 @@ export function parseNamedPairs(raw: string): NamedPair[] {
 
 /**
  * workspaces-o9o.160: config.json is read under the credential rule's procedure, with the node:fs this module already imports (CoS
- * 13:38Z option B; moving this I/O out of domain/ is o9o.161). It may be a link (the writer follows one by design), whose real
+ * 13:38Z option B; moving this I/O out of domain/ is workspaces-6ul). It may be a link (the writer follows one by design), whose real
  * target is judged; group/other write on that file of ours is narrowed, never refused. Null when absent; any other refusal throws,
  * naming the file and the fix.
  */

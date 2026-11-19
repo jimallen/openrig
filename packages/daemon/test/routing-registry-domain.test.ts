@@ -1,6 +1,6 @@
-// workspaces-o9o.160: the two domain readers of the routing registries run the credential rule's procedure with the node:fs they
-// already import (CoS 13:38Z option B): SettingsStore (config.json) and crash-cart's readDaemonJson (daemon.json). Every fixture
-// sets its own mode.
+// workspaces-o9o.160: the two readers of the routing registries run the credential rule's procedure: SettingsStore (config.json,
+// still in the domain until workspaces-6ul) and crash-cart's readDaemonJson (daemon.json, in adapters/ since workspaces-o9o.161).
+// Every fixture sets its own mode.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
