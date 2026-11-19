@@ -15,8 +15,15 @@ export function loadScale(reading: LoadReading): number {
   return Math.min(MAX_LOAD_SCALE, Math.max(1, Number.isFinite(ratio) ? ratio : 1));
 }
 
-/** A test wait's bound, scaled by the load measured when the wait starts. */
-export interface WaitBound {
+/**
+ * A test wait's bound, scaled by the load measured when the wait starts.
+ *
+ * workspaces-3u9: nominal, not structural. Its ES private field `#now` (the clock it reads) is the brand: a hand-made object of the same
+ * shape is a type error (TS2741, "Property '#now' is missing"), and the class is exported as a type only, so nothing outside this
+ * module can construct one: waitBound() is the only way to get a WaitBound (verify-qa, o9o.174 part 3 attempt 3: a hand-made one whose
+ * expired() read a fixed deadline type-checked and passed the census).
+ */
+class WaitBound {
   readonly startedAt: number;
   /** The bound the wait names, in ms. */
   readonly baseMs: number;
@@ -27,12 +34,31 @@ export interface WaitBound {
   readonly reading: LoadReading;
   /** startedAt + ms. */
   readonly deadline: number;
+  /** The clock expired() reads; private, so it is also the brand that makes the type nominal. */
+  readonly #now: () => number;
+
+  constructor(startedAt: number, baseMs: number, reading: LoadReading, now: () => number) {
+    this.startedAt = startedAt;
+    this.baseMs = baseMs;
+    this.reading = reading;
+    this.scale = loadScale(reading);
+    this.ms = Math.round(baseMs * this.scale);
+    this.deadline = startedAt + this.ms;
+    this.#now = now;
+  }
+
   /** True once the clock reaches the deadline (at it counts: a loop that ran `while (now < deadline)` stops there, and a give-up that
    *  fired at `now > deadline` fires no later; verify-qa, part 3 round 1). */
-  expired(): boolean;
+  expired(): boolean {
+    return this.#now() >= this.deadline;
+  }
+
   /** A counted poll loop's attempt budget, scaled the same way: ceil(n x scale). */
-  attempts(n: number): number;
+  attempts(n: number): number {
+    return Math.ceil(n * this.scale);
+  }
 }
+export type { WaitBound };
 
 /**
  * workspaces-o9o.174 part 3: the bound for a test wait that names `baseMs`. Under full-suite load (1-minute load 24 to 74 on 20 cores,
@@ -41,15 +67,7 @@ export interface WaitBound {
  */
 export function waitBound(baseMs: number, read: () => LoadReading = hostLoad, now: () => number = Date.now): WaitBound {
   const startedAt = now();
-  const reading = read();
-  const scale = loadScale(reading);
-  const ms = Math.round(baseMs * scale);
-  const deadline = startedAt + ms;
-  return {
-    startedAt, baseMs, ms, scale, reading, deadline,
-    expired: () => now() >= deadline,
-    attempts: (n) => Math.ceil(n * scale),
-  };
+  return new WaitBound(startedAt, baseMs, read(), now);
 }
 
 /**

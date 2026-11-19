@@ -12,15 +12,16 @@
 // (`bound.expired()`, `bound.attempts(n)`), whose bound scales with the measured load; a raw clock comparison or a fixed count is
 // "unscaled". "The bound" is decided by the TypeScript checker over the daemon's test project (tsconfig.test.json): the receiver's type
 // must be the WaitBound that helpers/wait-timeout.ts declares, so a foreign object with the same method names, or an alias of one, is
-// not the bound (verify-qa, round 2). A give-up that rethrows a caught value as it is (`throw error`) hands back
-// the failure the wait last saw, an assertion's diff or a command's own error; those are listed by name below, so a new one is a
-// decision and not a silent pass.
+// not the bound (verify-qa, round 2), and its value must be one waitBound() made: a `const` initialised by that call, or a `const`
+// alias of one (workspaces-3u9; WaitBound is also nominal, so a hand-made one does not compile). A give-up that rethrows a caught
+// value as it is (`throw error`) hands back the failure the wait last saw, an assertion's diff or a command's own error; those are
+// listed by name below, so a new one is a decision and not a silent pass.
 // Excluded as a class: one-shot setTimeout rejects are not censused. A `setTimeout(() => reject(...))` watchdog has no structure that
 // tells it apart from a fake that simulates a slow dependency (hc-seat-terminal-status's "late", plugin-vendor-service's "timeout").
 // The real ones known on 2026-11-19 were converted by hand (CoS ruling, verify-qa round 2): ps-summary-stall-red, slow-op-recorder,
 // helpers/scenario-surfaces and staging-docker-invoker's "parent did not end"; each sets its timer to its bound's scaled `bound.ms`.
 // A new one is not caught here.
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -49,15 +50,37 @@ const callsNamed = (n: ts.Node, names: readonly string[]): boolean => ts.isCallE
 const readsClock = (n: ts.Node): boolean => contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
   && (x.expression.name.text === "now" || x.expression.name.text === "expired"));
 /** A call of `expired()` or `attempts()` on a receiver whose type, through the TypeScript checker (not its spelling), is the WaitBound
- *  that helpers/wait-timeout.ts declares, which only waitBound() builds (verify-qa round 2: `other.expired()` on a foreign object, or
- *  an alias of one, is not the bound). */
-const boundCall = (checker: ts.TypeChecker) => (x: ts.Node): boolean => {
-  if (!ts.isCallExpression(x) || !ts.isPropertyAccessExpression(x.expression)) return false;
-  if (x.expression.name.text !== "expired" && x.expression.name.text !== "attempts") return false;
-  const type = checker.getTypeAtLocation(x.expression.expression);
-  const symbol = type.aliasSymbol ?? type.getSymbol();
-  return symbol?.getName() === "WaitBound"
-    && (symbol.declarations ?? []).some((d) => d.getSourceFile().fileName.replace(/\\/g, "/").endsWith("/helpers/wait-timeout.ts"));
+ *  that helpers/wait-timeout.ts declares (verify-qa round 2: `other.expired()` on a foreign object, or an alias of one, is not the
+ *  bound), and whose value waitBound() made (workspaces-3u9). */
+const inHelper = (d: ts.Node): boolean => d.getSourceFile().fileName.replace(/\\/g, "/").endsWith("/helpers/wait-timeout.ts");
+/** Made by waitBound() (workspaces-3u9): a call that resolves, through the checker, to the waitBound declared in helpers/wait-timeout.ts,
+ *  or a `const` whose initializer is one (followed through `const` aliases). The type alone is not enough: a hand-made object, a cast,
+ *  a parameter, a reassignable `let` or another function's result can carry the type without being one waitBound() made. */
+const madeByWaitBound = (checker: ts.TypeChecker) => {
+  const made = (e: ts.Expression, seen: Set<ts.Symbol>): boolean => {
+    if (ts.isCallExpression(e)) {
+      const d = checker.getResolvedSignature(e)?.declaration;
+      return d !== undefined && ts.isFunctionDeclaration(d) && d.name?.text === "waitBound" && inHelper(d);
+    }
+    if (!ts.isIdentifier(e)) return false;
+    const symbol = checker.getSymbolAtLocation(e);
+    if (!symbol || seen.has(symbol)) return false;
+    seen.add(symbol);
+    const d = symbol.valueDeclaration;
+    return d !== undefined && ts.isVariableDeclaration(d) && d.initializer !== undefined
+      && (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0 && made(d.initializer, seen);
+  };
+  return (e: ts.Expression): boolean => made(e, new Set());
+};
+const boundCall = (checker: ts.TypeChecker) => {
+  const made = madeByWaitBound(checker);
+  return (x: ts.Node): boolean => {
+    if (!ts.isCallExpression(x) || !ts.isPropertyAccessExpression(x.expression)) return false;
+    if (x.expression.name.text !== "expired" && x.expression.name.text !== "attempts") return false;
+    const type = checker.getTypeAtLocation(x.expression.expression);
+    const symbol = type.aliasSymbol ?? type.getSymbol();
+    return symbol?.getName() === "WaitBound" && (symbol.declarations ?? []).some(inHelper) && made(x.expression.expression);
+  };
 };
 const RELATIONAL = new Set([ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken,
   ts.SyntaxKind.GreaterThanEqualsToken]);
@@ -97,13 +120,14 @@ const isIntervalCallback = (p: ts.Node): boolean => ts.isFunctionLike(p) && ts.i
 export interface WaitGiveUp { at: string; kind: "evidenced" | "unscaled" | "rethrow" | "bare" }
 
 /** The declarations the in-memory rows type-check against: the real WaitBound's shape at helpers/wait-timeout.ts, and globals a row may
- *  use: `bound` (a WaitBound), `other` (a foreign object with the same method names). */
+ *  use: `bound` (a WaitBound that waitBound() made), `other` (a foreign object with the same method names), `WB` (the WaitBound type). */
 const ROW_PRELUDE: Record<string, string> = {
-  "/mem/helpers/wait-timeout.ts": "export interface WaitBound { readonly deadline: number; readonly ms: number; expired(): boolean; attempts(n: number): number }\n"
-    + "export declare function waitBound(ms: number): WaitBound;\n",
-  "/mem/globals.d.ts": "declare const bound: import(\"./helpers/wait-timeout\").WaitBound;\n"
-    + "declare function waitBound(ms: number): import(\"./helpers/wait-timeout\").WaitBound;\n"
-    + "declare const other: { readonly deadline: number; expired(): boolean; attempts(n: number): number };\n",
+  "/mem/helpers/wait-timeout.ts": "declare class WaitBound { #now: () => number; readonly deadline: number; readonly ms: number; expired(): boolean;"
+    + " attempts(n: number): number }\nexport type { WaitBound };\nexport declare function waitBound(ms: number): WaitBound;\n",
+  "/mem/globals.ts": "declare const waitBound: typeof import(\"./helpers/wait-timeout\").waitBound;\n"
+    + "const bound = waitBound(9);\n"
+    + "declare const other: { readonly deadline: number; expired(): boolean; attempts(n: number): number };\n"
+    + "type WB = import(\"./helpers/wait-timeout\").WaitBound;\n",
 };
 
 /** A program over in-memory row sources (keyed by bare names) plus ROW_PRELUDE, for the scanner's own rows. */
@@ -188,6 +212,13 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "foreign-count.ts": "async function w() {\n  for (let i = 0; i < other.attempts(9); i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
       "lookalike.ts": "interface WaitBound { expired(): boolean }\ndeclare const fake: WaitBound;\nasync function w() { for (;;) { if (fake.expired()) throw waitTimedOut('x', bound); await nap(); } }",
       "bound-alias.ts": "async function w() { const b3 = bound; for (;;) { if (b3.expired()) throw waitTimedOut('x', b3); await nap(); } }",
+      // workspaces-3u9: the bound's type is not enough; the receiver must come from a waitBound() call, through const aliases only.
+      "typed-fake.ts": "declare const typed: WB;\nasync function w() { for (;;) { if (typed.expired()) throw waitTimedOut('x', typed); await nap(); } }",
+      "cast-fake.ts": "const cast = {} as WB;\nasync function w() { for (;;) { if (cast.expired()) throw waitTimedOut('x', cast); await nap(); } }",
+      "let-bound.ts": "async function w() { let b4 = waitBound(9); b4 = other as WB; for (;;) { if (b4.expired()) throw waitTimedOut('x', b4); await nap(); } }",
+      "param-bound.ts": "async function w(b5: WB) { for (;;) { if (b5.expired()) throw waitTimedOut('x', b5); await nap(); } }",
+      "foreign-maker.ts": "declare function makeBound(ms: number): WB;\nasync function w() { const b6 = makeBound(9); for (;;) { if (b6.expired()) throw waitTimedOut('x', b6); await nap(); } }",
+      "fake-alias.ts": "declare const typed2: WB;\nasync function w() { const b7 = typed2; for (;;) { if (b7.expired()) throw waitTimedOut('x', b7); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
@@ -216,6 +247,12 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "foreign-count.ts:3", kind: "unscaled" },
       { at: "lookalike.ts:3", kind: "unscaled" },      // a type named WaitBound declared anywhere else is not the bound
       { at: "bound-alias.ts:1", kind: "evidenced" },   // an alias of the bound is the bound
+      { at: "typed-fake.ts:2", kind: "unscaled" },     // typed WaitBound but never made by waitBound() (workspaces-3u9)
+      { at: "cast-fake.ts:2", kind: "unscaled" },      // a cast to WaitBound is not a waitBound()
+      { at: "let-bound.ts:1", kind: "unscaled" },      // a reassignable binding can stop being the bound it was made as
+      { at: "param-bound.ts:1", kind: "unscaled" },    // a parameter's caller is not seen: make the bound where the wait is
+      { at: "foreign-maker.ts:2", kind: "unscaled" },  // another function returning WaitBound is not waitBound()
+      { at: "fake-alias.ts:2", kind: "unscaled" },     // an alias of a fake stays a fake
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
@@ -233,6 +270,63 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
     ["claude-interactive-isolation (throw Error without new)", "async function until(f:()=>boolean){for(let i=0;i<240;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw Error('private pane did not produce receipt');}", 1],
   ])("the census catches a wait the textual census missed: %s", (_name, source, line) => {
     expect(waitGiveUps({ "site.ts": source })).toEqual([{ at: `site.ts:${line}`, kind: "bare" }]);
+  });
+
+  // workspaces-3u9: verify-qa's attempt-3 repro (o9o174-part3-attempt3-e100c037/fake-wait-bound-repro.ts), byte for byte below its
+  // header comment, placed where verify-qa placed it. A hand-made WaitBound whose expired() reads a fixed deadline: it must not compile
+  // (WaitBound is nominal, made only by waitBound()), and the census must not credit it even where type errors are tolerated (the daemon
+  // test type check is a ratchet, not a gate on zero).
+  it("a hand-made WaitBound does not compile, and the census does not credit it (verify-qa's attempt-3 fake)", () => {
+    const fakePath = join(TEST_DIR, "__review-fake-wait-bound.ts");
+    const fakeSource = [
+      'import { waitTimedOut, type WaitBound } from "./helpers/wait-timeout.js";',
+      "",
+      "const oldDeadline = Date.now() + 1_000;",
+      "const fake: WaitBound = {",
+      "  startedAt: Date.now(),",
+      "  baseMs: 1_000,",
+      "  ms: 1_000,",
+      "  scale: 1,",
+      "  reading: { load1: 0, cores: 20 },",
+      "  deadline: oldDeadline,",
+      "  expired: () => Date.now() > oldDeadline,",
+      "  attempts: (n) => n,",
+      "};",
+      "",
+      "async function waitForFakeWaitBound(): Promise<never> {",
+      "  for (;;) {",
+      '    if (fake.expired()) throw waitTimedOut("fake WaitBound probe", fake);',
+      "    await new Promise((resolve) => setTimeout(resolve, 5));",
+      "  }",
+      "}",
+      "void waitForFakeWaitBound;",
+      "",
+    ].join("\n");
+    const configPath = join(TEST_DIR, "..", "tsconfig.test.json");
+    const parsed = ts.parseJsonConfigFileContent(ts.readConfigFile(configPath, ts.sys.readFile).config, ts.sys, join(TEST_DIR, ".."));
+    const options = { ...parsed.options, noEmit: true };
+    // And nothing outside helpers/wait-timeout.ts can construct one: the class is exported as a type only.
+    const constructPath = join(TEST_DIR, "__review-construct-wait-bound.ts");
+    const constructSource = 'import { WaitBound } from "./helpers/wait-timeout.js";\n'
+      + "export const made = new WaitBound(0, 1_000, { load1: 0, cores: 20 }, () => 0);\n";
+    const virtual: Record<string, string> = { [fakePath]: fakeSource, [constructPath]: constructSource };
+    const host = ts.createCompilerHost(options);
+    const read = host.getSourceFile.bind(host);
+    host.getSourceFile = (fileName, target, ...rest) =>
+      (fileName in virtual ? ts.createSourceFile(fileName, virtual[fileName]!, target, true) : read(fileName, target, ...rest));
+    const fileExists = host.fileExists.bind(host);
+    host.fileExists = (fileName) => fileName in virtual || fileExists(fileName);
+    const program = ts.createProgram([join(TEST_DIR, "helpers", "wait-timeout.ts"), fakePath, constructPath], options, host);
+    const errors = (path: string) => program.getSemanticDiagnostics(program.getSourceFile(path)).map((d) => ({
+      line: d.file!.getLineAndCharacterOfPosition(d.start!).line + 1, code: d.code,
+      message: ts.flattenDiagnosticMessageText(d.messageText, "\n").split("\n")[0],
+    }));
+    // TS2741 on `const fake: WaitBound`: the private brand, which only a WaitBound that waitBound() made carries, is missing.
+    expect(errors(fakePath)).toEqual([{ line: 4, code: 2741, message: expect.stringContaining("Property '#now' is missing") }]);
+    expect(errors(constructPath)).toEqual([{ line: 2, code: 1362, message: expect.stringContaining("exported using 'export type'") }]);
+    expect(waitGiveUps({}, { program, fileNames: [fakePath], root: TEST_DIR })).toEqual([
+      { at: "__review-fake-wait-bound.ts:17", kind: "unscaled" },
+    ]);
   });
 
   it("every wait in the daemon tests gives up through waitTimedOut", () => {
