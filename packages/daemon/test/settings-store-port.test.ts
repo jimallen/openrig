@@ -1,12 +1,15 @@
 // workspaces-6ul: SettingsStore keeps the settings rules in the domain (env > file > default, validation, verify-after-write) and
 // reaches config.json only through its SettingsFile port; the file mechanics live in adapters/node-settings-file.ts. These rows drive
 // the store through an in-memory SettingsFile, with no file at all, and pin the null-object reader the domain falls back to.
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialFileRead } from "../src/domain/credential-file.js";
 import type { SettingsFile } from "../src/domain/user-settings/settings-file.js";
 import { DEFAULT_SETTINGS, SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { NodeSettingsFile } from "../src/adapters/node-settings-file.js";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
@@ -65,6 +68,17 @@ describe("workspaces-6ul: SettingsStore reaches config.json only through its Set
     const lossy = memoryFile();
     lossy.file.write = () => { lossy.file.writes++; };
     expect(() => new SettingsStore(lossy.port, "/h").set("queue.wake_retry_cap", "4")).toThrow(/did NOT persist/);
+  });
+
+  it("the config.json adapter creates the folder a first write lands in, as the store's set always did", () => {
+    const dir = mkdtempSync(join(tmpdir(), "settings-file-"));
+    try {
+      const file = new NodeSettingsFile(join(dir, "fresh", ".openrig", "config.json"));
+      new SettingsStore(file, dir).set("queue.wake_retry_cap", "4");
+      expect(JSON.parse(readFileSync(file.path, "utf8"))).toEqual({ queue: { wakeRetryCap: 4 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("DEFAULT_SETTINGS resolves a key to its built-in default and reads nothing; a home-derived key has no default there", () => {
