@@ -9,7 +9,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { RigModeStore } from "../src/domain/rig-mode/rig-mode-store.js";
 import { OperatingPostureService, configuredCatalogPath } from "../src/domain/rig-mode/operating-posture.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { RECOMMENDED_MODE_DEFAULTS } from "../src/domain/rig-mode/rig-mode-defaults.js";
 import type { OperatorContextScope } from "../src/domain/rig-mode/rig-mode-types.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
@@ -283,7 +283,7 @@ it("keeps the default catalog beside the real workspace when workspace.root is a
   const configPath = join(root, "config.json");
   const resolveWith = (workspaceConfig: Record<string, string>, projectId: string) => {
     writeFileSync(configPath, JSON.stringify({ workspace: workspaceConfig }));
-    const settings = new SettingsStore(configPath);
+    const settings = openSettingsStore(configPath);
     const service = new OperatingPostureService(db, new RigModeStore(db), () => settings.resolveOne("workspace.root").value as string, configuredCatalogPath(settings));
     return service.resolve({ projectId });
   };

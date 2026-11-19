@@ -17,7 +17,7 @@
 // null-tolerant. Wiring reopens only for the 0.5.7 mechanized-pull turn-end hook that knows the in-flight row,
 // the first honest row-scoped writer. daemon-lifecycle-store.recordHeartbeat remains live and distinct.
 
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 
 export const PICKUP_STALL_THRESHOLD_KEY = "queue.pickup_stall_threshold_minutes";
 export const DEFAULT_PICKUP_STALL_THRESHOLD_MINUTES = 3;
@@ -36,9 +36,9 @@ const CLOSED_PICKUP_STATES = ["done", "failed", "denied", "canceled", "handed-of
 
 /** Threshold, FRESH-READ per call (the terminal.status_bar precedent: a config flip applies
  *  to the next read, no restart). Fail-open to the default on any resolution error. */
-export function resolvePickupThresholdMinutes(): number {
+export function resolvePickupThresholdMinutes(settings: SettingsReader): number {
   try {
-    const v = new SettingsStore().resolveOne(PICKUP_STALL_THRESHOLD_KEY).value;
+    const v = settings.resolveOne(PICKUP_STALL_THRESHOLD_KEY).value;
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) && n > 0 ? n : DEFAULT_PICKUP_STALL_THRESHOLD_MINUTES;
   } catch {
@@ -61,7 +61,7 @@ export interface PickupFacts {
 
 /** The ONE derivation rule — every projection surface (rowToItem, the pickup view lens, the
  *  S02 finding input) calls this same function, so the rule cannot drift between surfaces. */
-export function derivePickup(facts: PickupFacts): PickupReceipt {
+export function derivePickup(facts: PickupFacts, settings: SettingsReader = DEFAULT_SETTINGS): PickupReceipt {
   if (facts.state === "blocked") return { state: "parked" };
   if ((CLOSED_PICKUP_STATES as readonly string[]).includes(facts.state)) {
     return { state: "terminal", evidence: `closed (${facts.state})` };
@@ -76,7 +76,7 @@ export function derivePickup(facts: PickupFacts): PickupReceipt {
   if (facts.activity === "working" && !facts.needsInput) return { state: "working" };
   // Legacy callers without a timestamp retain their historical count contract.
   if (facts.lastMeaningfulAt === undefined && (facts.postClaimMotionCount > 0 || heartbeatAfterClaim)) return { state: "working" };
-  const thresholdMs = (facts.thresholdMinutes ?? resolvePickupThresholdMinutes()) * 60_000;
+  const thresholdMs = (facts.thresholdMinutes ?? resolvePickupThresholdMinutes(settings)) * 60_000;
   const anchor = Math.max(claimedMs, Date.parse(facts.lastMeaningfulAt ?? facts.claimedAt), heartbeatAfterClaim ? Date.parse(facts.lastHeartbeat!) : claimedMs);
   const ageMs = now.getTime() - anchor;
   if (ageMs <= thresholdMs) return { state: "working" };

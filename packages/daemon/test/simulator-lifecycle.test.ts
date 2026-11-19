@@ -8,7 +8,7 @@ import path from "node:path";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import {
   SimulatorLifecycle, nameIsForSeat, seatToken, parseSimctlDevices,
   BYTES_PER_GB, SIMULATOR_SIZE_CAP_DEFAULT_GB, realSimctlAllowed, enableRealSimctlIfAllowed, buildSimulatorLifecycle, type SimctlExec,
@@ -372,7 +372,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       const savedEnv = process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"];
       delete process.env["OPENRIG_SIMULATORS_SIZE_CAP_GB"];
       try {
-        const store = new SettingsStore(cfg);
+        const store = openSettingsStore(cfg);
         expect(SIMULATOR_SIZE_CAP_DEFAULT_GB).toBe(20);
         expect(store.resolveOne("simulators.size_cap_gb")).toMatchObject({ value: 20, source: "default" });
 
@@ -554,7 +554,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       const saved = process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
       delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
       try {
-        const store = new SettingsStore(path.join(cfgDir, "config.json"));
+        const store = openSettingsStore(path.join(cfgDir, "config.json"));
         store.set("simulators.claim_dirs", ` ${claims} , ${queue},`);
         const fake = fakeSimctl([{ udid: UD(1), name: "qa-duo-271", state: "Shutdown", dataPathSize: 8 * GB }]);
         const sim = buildSimulatorLifecycle({ db, eventBus, settings: () => store, simctl: fake.exec, log: (l) => log.push(l) });
@@ -583,7 +583,7 @@ describe("OF-208 SimulatorLifecycle", () => {
 
     it("startup.ts builds the service through buildSimulatorLifecycle with the settings store, and nowhere constructs it bare", () => {
       const startup = fs.readFileSync(path.resolve(import.meta.dirname, "../src/startup.ts"), "utf8");
-      expect(startup).toContain("buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore(), notifyErased: ");  // OF-221 adds the notice port; the settings store is still what it reads
+      expect(startup).toContain("buildSimulatorLifecycle({ db, eventBus, settings: () => openSettingsStore(), notifyErased: ");  // OF-221 adds the notice port; the settings store is still what it reads
       expect(startup).not.toMatch(/new SimulatorLifecycle\(/);
       expect(startup).toMatch(/simulatorLifecycle,\n\s+rigExpansionService,/); // handed to the app deps
     });
@@ -636,7 +636,7 @@ describe("OF-208 SimulatorLifecycle", () => {
       const saved = process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
       delete process.env["OPENRIG_SIMULATORS_CLAIM_DIRS"];
       try {
-        const store = new SettingsStore(path.join(dir, "config.json"));
+        const store = openSettingsStore(path.join(dir, "config.json"));
         expect(store.resolveOne("simulators.claim_dirs")).toMatchObject({ value: "", source: "default" });
         store.set("simulators.claim_dirs", "/a/lock.sim, /a/lock.queue");
         expect(store.resolveOne("simulators.claim_dirs")).toMatchObject({ value: "/a/lock.sim, /a/lock.queue", source: "file" });

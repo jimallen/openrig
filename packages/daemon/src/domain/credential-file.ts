@@ -166,9 +166,9 @@ export function seatCredentialLinkPolicy(link: SeatCredentialLink, sharedFile: s
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 // The procedure (o9o.160, CoS 11-18 13:38Z option B): the rule's open/judge/narrow/read steps, as pure functions over an injected
-// CredentialFileOps, so the fs adapter and the one domain module that still does its own file I/O (SettingsStore; moving it out of
-// domain/ is workspaces-6ul; crash-cart's readDaemonJson moved to an adapter in workspaces-o9o.161) run ONE procedure. This module
-// imports nothing.
+// CredentialFileOps, so every reader runs ONE procedure; the node:fs adapters supply the ops (SettingsStore's config.json since
+// workspaces-6ul, crash-cart's readDaemonJson since workspaces-o9o.161; no domain module does its own file I/O). This module imports
+// nothing.
 // ---------------------------------------------------------------------------------------------------------------------------------
 
 /** The file operations the procedure needs. Errors carry the errno `code` (ENOENT, ELOOP, EMLINK, ...). */

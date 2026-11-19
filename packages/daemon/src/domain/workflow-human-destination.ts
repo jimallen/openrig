@@ -1,5 +1,5 @@
 import { loadHumanRegistry, resolveRegisteredHumanAddress, type LoadResult } from "./gateway/human-registry.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 
 export class WorkflowHumanDestinationError extends Error {
   readonly code = "workflow_human_destination_unavailable";
@@ -9,11 +9,13 @@ export class WorkflowHumanDestinationError extends Error {
   }
 }
 
-/** The existing operator selection, resolved afresh only when a human is needed. */
+/** The existing operator selection, resolved afresh only when a human is needed. `settings` is the daemon's (workspaces-6ul);
+ *  DEFAULT_SETTINGS, which selects no operator, when absent. */
 export function resolveWorkflowHumanDestination(
-  configured: () => unknown = () => new SettingsStore().resolveOne("workspace.operator_seat_name").value,
+  settings: SettingsReader = DEFAULT_SETTINGS,
   registry: () => LoadResult = loadHumanRegistry,
 ): string {
+  const configured = (): unknown => settings.resolveOne("workspace.operator_seat_name").value;
   let selected: unknown;
   let loaded: LoadResult;
   try {

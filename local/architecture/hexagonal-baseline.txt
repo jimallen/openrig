@@ -403,8 +403,6 @@ src/domain/types.ts src/adapters/pda-runner-protocol.js type fork
 src/domain/usage-samples-store.ts better-sqlite3 type upstream
 src/domain/usage-series.ts better-sqlite3 type upstream
 src/domain/user-settings/settings-browser.ts node:fs value upstream
-src/domain/user-settings/settings-store.ts node:fs value upstream
-src/domain/user-settings/settings-store.ts node:os value upstream
 src/domain/vendored-file-guard.ts node:fs value fork
 src/domain/view-projector.ts better-sqlite3 type upstream
 src/domain/wake-resolve-service.ts better-sqlite3 type fork

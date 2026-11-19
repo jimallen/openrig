@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { HcAdapter } from "../src/adapters/hc-adapter.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
 
 const keys = ["OPENRIG_TRANSCRIPTS_LINES", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS"];
@@ -39,7 +39,7 @@ describe.skipIf(!findHc())("hc transcript seat environment", () => {
       for (const key of keys) vi.stubEnv(key, seen[key]);  // the seat's view of the names, which the settings store reads from the seat
       expect(keys.map((key) => seen[key])).toEqual(["", ""]);
       fs.writeFileSync(config, JSON.stringify({ transcripts: { lines: 123, pollIntervalSeconds: 15 } }));
-      const store = new SettingsStore(config);
+      const store = openSettingsStore(config);
       expect(store.resolveOne("transcripts.lines")).toMatchObject({ value: 123, source: "file" });
       expect(store.resolveOne("transcripts.poll_interval_seconds")).toMatchObject({ value: 15, source: "file" });
       // A deliberate seat override remains authoritative.

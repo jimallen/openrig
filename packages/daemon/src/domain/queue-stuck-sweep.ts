@@ -27,7 +27,7 @@ import { defaultResolveOrchestrator } from "./queue-owner.js";
 import type Database from "better-sqlite3";
 import { deriveCrossHostSuccessorId, matchesRecordedHandoffTarget, type QueueItem, type QueueRepository } from "./queue-repository.js";
 import { stalledPickupFinding } from "./queue-pickup.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { loadHostRegistry } from "./hosts/hosts-registry-reader.js";
 import type { CredentialFileReader } from "./credential-file.js";
 import { isUnreadableRowError } from "./unreadable-row.js";
@@ -102,9 +102,9 @@ export function createStuckSweepStatus(): StuckSweepStatus {
 
 /** Cadence, fresh-read with fail-open defaults (the queue-pickup precedent: a config flip
  *  applies to the next tick, and a settings error never silences the sweep). */
-export function resolveStuckSweepIntervalSeconds(): number {
+export function resolveStuckSweepIntervalSeconds(settings: SettingsReader): number {
   try {
-    const v = new SettingsStore().resolveOne(STUCK_SWEEP_INTERVAL_KEY as never).value;
+    const v = settings.resolveOne(STUCK_SWEEP_INTERVAL_KEY as never).value;
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) && n > 0 ? n : DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS;
   } catch {
@@ -112,9 +112,9 @@ export function resolveStuckSweepIntervalSeconds(): number {
   }
 }
 
-export function resolveStuckSweepUnclaimedAgeMinutes(): number {
+export function resolveStuckSweepUnclaimedAgeMinutes(settings: SettingsReader): number {
   try {
-    const v = new SettingsStore().resolveOne(STUCK_SWEEP_UNCLAIMED_AGE_KEY as never).value;
+    const v = settings.resolveOne(STUCK_SWEEP_UNCLAIMED_AGE_KEY as never).value;
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) && n > 0 ? n : DEFAULT_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES;
   } catch {
@@ -132,6 +132,8 @@ export interface StuckSweepDeps {
    *  layer). Injectable for tests; default derives from topology. */
   resolveOrchestrator?: (session: string) => string | null;
   unclaimedAgeMinutes?: number;
+  /** The daemon's settings (the unclaimed age and the pickup threshold); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+  settings?: SettingsReader;
   custodyWindowHours?: number;
   now?: Date;
   log?: (line: string) => void;
@@ -380,9 +382,10 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
 export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepResult> {
   const log = deps.log ?? ((line: string) => console.error(line));
   const status = deps.status;
+  const settings = deps.settings ?? DEFAULT_SETTINGS;
   try {
     const now = deps.now ?? new Date();
-    const ageMinutes = deps.unclaimedAgeMinutes ?? resolveStuckSweepUnclaimedAgeMinutes();
+    const ageMinutes = deps.unclaimedAgeMinutes ?? resolveStuckSweepUnclaimedAgeMinutes(settings);
     const resolveOrch =
       deps.resolveOrchestrator ?? ((session: string) => defaultResolveOrchestrator(deps.db, session));
     const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log, deps.credentialFiles);
@@ -461,7 +464,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     const waitJobs = deps.db.prepare("SELECT job_id, spec_yaml FROM watchdog_jobs WHERE state = 'active' AND policy = 'periodic-reminder'").all() as Array<{ job_id: string; spec_yaml: string }>;
     for (const job of waitJobs) {
       const notice = queueWaitNotice(job.spec_yaml);
-      if (!notice || now.getTime() - Date.parse(notice.at) <= resolvePickupThresholdMinutes() * 60_000) continue;
+      if (!notice || now.getTime() - Date.parse(notice.at) <= resolvePickupThresholdMinutes(settings) * 60_000) continue;
       const binding = deps.db.prepare("SELECT qitem_id FROM queue_transition_wakes WHERE wake_ref = ? AND phase = 'armed' ORDER BY transition_id DESC LIMIT 1").get(job.job_id) as { qitem_id: string } | undefined;
       const row = binding ? readRow(binding.qitem_id) : null;
       if (!row || row.state !== "blocked" || deps.queueRepo.getParkWakeStatus(row.qitemId)?.ref !== job.job_id) continue;

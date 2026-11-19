@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { stringify } from "yaml";
 import { SettingsStore, SETTINGS_VALID_KEYS } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { settingsBrowser } from "../src/domain/user-settings/settings-browser.js";
 import { configRoutes } from "../src/routes/config.js";
 import { DEFAULT_CONFIG, configPathFor, saveConfig } from "../src/domain/gateway/slack/config.js";
@@ -26,7 +27,7 @@ function snapshot(dir: string): Record<string, string> {
 }
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "s06-browser-"));
-  store = new SettingsStore(join(home, "config.json"));
+  store = openSettingsStore(join(home, "config.json"));
   for (const key of Object.keys(process.env).filter((k) => /^(OPENRIG_|RIGGED_|SLACK_)/.test(k))) vi.stubEnv(key, "");
   vi.stubEnv("OPENRIG_HOME", home);
   vi.stubEnv("OPENRIG_WORKSPACE_ROOT", join(home, "workspace"));

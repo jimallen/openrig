@@ -15,7 +15,7 @@
 import * as path from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { CAPTURE_BATCH, type TmuxAdapter } from "../adapters/tmux.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { requireTranscriptFiles, type TranscriptFiles } from "./transcript-files.js";
 
 /**
@@ -48,7 +48,7 @@ export const ACTIVITY_HINT_DEADLINE_MS = 1000;
 
 /** A shared live resolver retains a usable policy during partial config writes.
  * Environment overrides keep their existing precedence over file settings. */
-export function createTranscriptRotationOptionsResolver(store: SettingsStore, reportError?: (error: string | null) => void): () => TranscriptRotationOptions {
+export function createTranscriptRotationOptionsResolver(store: SettingsReader, reportError?: (error: string | null) => void): () => TranscriptRotationOptions {
   let snapshot: { at: number; options: TranscriptRotationOptions } | undefined;
   return () => {
     if (snapshot && Date.now() - snapshot.at < 1000) return snapshot.options;
@@ -68,12 +68,19 @@ export function createTranscriptRotationOptionsResolver(store: SettingsStore, re
 }
 
 let settingsReloadError: string | null = null;
-let liveOptions = createTranscriptRotationOptionsResolver(new SettingsStore(), (error) => { settingsReloadError = error; });
+/** One live resolver per settings reader (workspaces-6ul: the reader is the transcript store's, which the daemon gives its real
+ *  settings), so every rotator of this daemon shares one read per second. */
+let liveResolvers = new WeakMap<SettingsReader, () => TranscriptRotationOptions>();
 
-/** Live environment > file > default settings; read at most once per second
- * across all production rotators in this daemon process. */
-export function getTranscriptRotationOptionsFromEnv(): TranscriptRotationOptions {
-  return liveOptions();
+/** Live environment > file > default settings from `settings`; read at most once per second across all production rotators that
+ *  share it. DEFAULT_SETTINGS (built-in defaults, nothing read) when absent. */
+export function getTranscriptRotationOptionsFromEnv(settings: SettingsReader = DEFAULT_SETTINGS): TranscriptRotationOptions {
+  let resolve = liveResolvers.get(settings);
+  if (!resolve) {
+    resolve = createTranscriptRotationOptionsResolver(settings, (error) => { settingsReloadError = error; });
+    liveResolvers.set(settings, resolve);
+  }
+  return resolve();
 }
 
 interface CaptureStats {
@@ -457,7 +464,7 @@ export function clearAllTranscriptRotationsForTest(): void {
   activeGeneration.clear();
   captureStats.clear();
   settingsReloadError = null;
-  liveOptions = createTranscriptRotationOptionsResolver(new SettingsStore(), (error) => { settingsReloadError = error; });
+  liveResolvers = new WeakMap();
   activitySnapshots = new WeakMap();
   unlistedSessions = new Set();
 }

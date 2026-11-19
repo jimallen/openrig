@@ -31,8 +31,8 @@ export async function startTmuxTranscriptCapture(
     tmuxAdapter,
     sessionName,
     transcriptPath,
-    getTranscriptRotationOptionsFromEnv(),
-    getTranscriptRotationOptionsFromEnv,
+    getTranscriptRotationOptionsFromEnv(transcriptStore.settings),
+    () => getTranscriptRotationOptionsFromEnv(transcriptStore.settings),
   );
   return { started: true };
 }

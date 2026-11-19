@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { providerRoutes } from "../../daemon/src/routes/provider.js";
 import { configRoutes } from "../../daemon/src/routes/config.js";
 import { gatewayRoutes } from "../../daemon/src/routes/gateway.js";
-import { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import type { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../daemon/src/adapters/node-settings-file.js";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
 import { createViewState, emptySnapshot } from "../src/state.js";
@@ -101,7 +102,7 @@ let app: Hono;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "s01-usage-journey-"));
-  settings = new SettingsStore(join(home, "config.json"));
+  settings = openSettingsStore(join(home, "config.json"));
   external = vi.fn(() => { throw new Error("unexpected external operation"); });
   vi.stubGlobal("fetch", external);
   refreshUsage = vi.fn(async () => { throw new Error("the view must never refresh"); });

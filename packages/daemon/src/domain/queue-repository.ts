@@ -10,6 +10,7 @@ import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
 import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOutcomeLabel, type SeatMessageClass } from "./outbox-handler.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import type { MessageHandOff } from "./seat-messaging/hand-off.js";
 import type { MessageObligations } from "./seat-messaging/pump-ports.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
@@ -820,6 +821,7 @@ export class QueueRepository {
   private readonly hasTransitionProvenanceColumn: boolean;
   private readonly hasOwnerNotificationColumns: boolean;
   private readonly loadHumanRegistryFn: () => LoadResult;
+  private readonly settings: SettingsReader;
   /** OPR.0.4.6.WF3 FR-6 — injected by startup (never imported): the
    *  workflow domain's is-live-frontier-packet predicate. */
   private readonly workflowFrontierPredicate:
@@ -859,6 +861,8 @@ export class QueueRepository {
        */
       resolveOccupantGeneration?: (sessionName: string) => string | null;
       loadHumanRegistry?: () => LoadResult;
+      /** The daemon's settings (pickup, waiting and wake-ladder timings); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+      settings?: SettingsReader;
     }
   ) {
     this.db = db;
@@ -871,6 +875,7 @@ export class QueueRepository {
     this.workflowFrontierPredicate = opts?.workflowFrontierPredicate;
     this.resolveOccupantGeneration = opts?.resolveOccupantGeneration;
     this.loadHumanRegistryFn = opts?.loadHumanRegistry ?? (() => loadHumanRegistry());
+    this.settings = opts?.settings ?? DEFAULT_SETTINGS;
     this.hasTargetRepoColumn = detectQueueColumn(db, "target_repo");
     this.hasSummaryColumn = detectQueueColumn(db, "summary");
     this.hasHumanIntentColumn = detectQueueColumn(db, "human_intent");
@@ -4166,7 +4171,7 @@ export class QueueRepository {
   }
 
   waitingView(qitemId: string): WaitingView | null {
-    const view = readWaitingView(this.db, qitemId, this.activityReader);
+    const view = readWaitingView(this.db, qitemId, this.activityReader, this.settings);
     if (view && ["pending", "in-progress"].includes(view.state)) {
       // #514 — the unclaimed sweep skips a pending ask already posted to its human in the current
       // episode (same predicate as runStuckSweep), so the view must not promise that sweep.
@@ -4174,7 +4179,7 @@ export class QueueRepository {
       if (awaitingHuman) {
         view.nextBackstop = { owner: view.owner, mechanism: "none (posted to the human; awaiting their decision)", dueAt: null, intervalSeconds: null };
       }
-      const recovery = readWakeLadderBackstop(this.db, qitemId);
+      const recovery = readWakeLadderBackstop(this.db, qitemId, this.settings);
       if (recovery) {
         if (!awaitingHuman) view.laterBackstop = { ...view.nextBackstop, note: "Conditional safety net; current delivery/recovery ownership is evaluated first." };
         view.nextBackstop = recovery;
@@ -4242,7 +4247,7 @@ export class QueueRepository {
       claimedAt: row.claimed_at,
       lastHeartbeat: row.last_heartbeat,
       postClaimMotionCount: 0, // this reader supplies the current meaningful timestamp
-    });
+    }, this.settings);
     const handoffAdvisory = this.handoffAdvisory(row);
     return {
       ...(handoffAdvisory ? { handoffAdvisory } : {}),

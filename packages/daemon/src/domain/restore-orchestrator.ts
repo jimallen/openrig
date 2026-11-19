@@ -101,6 +101,7 @@ import { rigAdviceHandle, rigAdviceHandleIn } from "./rig-ref.js";
 import { registeredPaneOf } from "./binding-pane.js";
 import { redactPaneText } from "./launch-failure-report.js";
 import { freshSeatLeaseRefusal, type RelaunchCheckPort } from "./relaunch-checks.js";
+import type { SettingsReader } from "./user-settings/settings-store.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
 
@@ -181,6 +182,9 @@ export interface NarrowLaunchResult {
 }
 
 interface RestoreOrchestratorDeps {
+  /** The daemon's settings, for the startup orchestrator a restore builds (the readiness window); DEFAULT_SETTINGS when absent
+   *  (workspaces-6ul). */
+  settings?: SettingsReader;
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -241,10 +245,12 @@ export class RestoreOrchestrator {
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
+  private readonly settings: SettingsReader | undefined;
   private seatStartupSource: SeatStartupSpecReader | null;
   private appliedLaunchStore: AppliedLaunchObservationStore;
 
   constructor(deps: RestoreOrchestratorDeps) {
+    this.settings = deps.settings;
     if (deps.db !== deps.rigRepo.db) {
       throw new Error("RestoreOrchestrator: rigRepo must share the same db handle");
     }
@@ -1795,7 +1801,7 @@ export class RestoreOrchestrator {
 
           try {
             const { StartupOrchestrator } = await import("./startup-orchestrator.js");
-            const startupOrch = new StartupOrchestrator({ db: this.db, sessionRegistry: this.sessionRegistry, eventBus: this.eventBus, tmuxAdapter: this.tmuxAdapter,
+            const startupOrch = new StartupOrchestrator({ readinessSettings: this.settings, db: this.db, sessionRegistry: this.sessionRegistry, eventBus: this.eventBus, tmuxAdapter: this.tmuxAdapter,
               ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}) });
             const replayAsRestore = baseStatus !== "fresh-primed";
             const shouldLaunchHarness = isPodAware;

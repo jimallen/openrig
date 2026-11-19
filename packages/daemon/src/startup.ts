@@ -188,7 +188,7 @@ import { openRigContextLibraryRoots } from "./domain/instance-initialization.js"
 import { resolveSystemWorld } from "./domain/system-world.js";
 import { AgentImageLibraryService } from "./domain/agent-images/agent-image-library-service.js";
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
-import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
+import { openSettingsStore } from "./adapters/node-settings-file.js";
 import { resolveReadinessTimeoutMs } from "./domain/readiness-timeout.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
@@ -382,7 +382,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // boot (mint on first boot, reconcile thereafter). host.name is a display-only
   // CANDIDATE SEED (arch ruling cb19867f / DP4). Boot proceeds on a host.name
   // conflict (the stored id is kept and the conflict is surfaced loudly).
-  const hostNameCandidate = new ContextPackSettingsStore().resolveOne("host.name").value as string;
+  const hostNameCandidate = openSettingsStore().resolveOne("host.name").value as string;
   const selfHost = reconcileSelfHostIdentity(new SelfHostIdentityStore(db), {
     nowIso: new Date().toISOString(),
     hostNameCandidate,
@@ -507,7 +507,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // both the queueRepo dep slot and inboxHandler can share one instance.
   // Transport is wired after SessionTransport instantiation below via
   // attachTransport().
+  // workspaces-6ul: the daemon's settings, passed to every domain object that reads them (the domain's own fallback,
+  // DEFAULT_SETTINGS, reads nothing).
+  const daemonSettings = openSettingsStore();
   const queueRepoInstance = new QueueRepository(db, eventBus, {
+    settings: daemonSettings,
     validateRig: topologyValidateRig,
     destinationAdvisory: topologyDestinationAdvisory,
     // OPR.0.4.6.WF3 FR-6 — the frontier close-path guard's predicate,
@@ -530,7 +534,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const classifierLeaseManagerInstance = new ClassifierLeaseManager(db, eventBus);
   // PL-004 Phase B — view-projector. Constructed early so both the
   // viewProjector dep slot and the view-event-bridge can share one instance.
-  const viewProjectorInstance = new ViewProjector(db, eventBus);
+  const viewProjectorInstance = new ViewProjector(db, eventBus, { settings: daemonSettings });
   // PL-004 Phase B R1 (closes guard BLOCKER 2): wire the view event bridge
   // so queue/inbox/project mutations emit view.changed for affected built-in
   // views. SSE consumers on /api/views/:name/sse now receive change events
@@ -550,7 +554,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const watchdogAutoRegistration = new WatchdogAutoRegistration({
     db,
     jobsRepo: watchdogJobsRepoInstance,
-    settingsStore: new ContextPackSettingsStore(),
+    settingsStore: openSettingsStore(),
     warn: (message) => console.warn(message),
   });
   sessionRegistry.setWatchdogRegistrationObserver(watchdogAutoRegistration);
@@ -612,7 +616,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // (the THIRD axis). Reconciles each running seat's pane PID/command against
   // the registered binding and persists the verdict so node-inventory can gate
   // the running/active green derivations. Started post-bind in index.ts.
-  const readinessSettings = new ContextPackSettingsStore();
+  const readinessSettings = openSettingsStore();
   const seatIdentityReconciler = new SeatIdentityReconciler({
     db,
     tmux: tmuxAdapter,
@@ -644,7 +648,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // address — a hardcoded 127.0.0.1 breaks an explicit tailnet/hostname bind.
   const resolvedActivityHookUrl = activityHookUrl ?? deriveActivityUrl(openRigHost, openRigPort);
   writeActivityEndpointFile(OPENRIG_HOME, { baseUrl: resolvedActivityHookUrl, token: resolvedActivityHookToken });
-  const startupSettings = new ContextPackSettingsStore().resolveConfig();
+  const startupSettings = openSettingsStore().resolveConfig();
   const providerAuthEnv = collectAllowlistedProviderAuthEnv(
     startupSettings.recoveryProviderAuthEnvAllowlistRaw,
     process.env,
@@ -655,6 +659,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     omp: collectAllowlistedProviderAuthEnv(startupSettings.recoveryProviderAuthEnvAllowlistRaw, process.env, "omp"),
   };
   const transcriptStore = new TranscriptStore({
+    settings: daemonSettings,
     files: nodeTranscriptFiles(),
     enabled: transcriptsEnabled,
     transcriptsRoot: transcriptsPath,
@@ -698,7 +703,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // FRESH per launch (resolveOne re-reads the config file) so an operator flip
   // applies to the NEXT launch without a daemon restart; a resolution failure
   // falls back to off (bar hidden).
-  const tmuxOptionSettings = new ContextPackSettingsStore();
+  const tmuxOptionSettings = openSettingsStore();
   const tmuxOptionDefaults = new TmuxOptionDefaultsApplier({
     tmuxAdapter,
     platform: opts?.tmuxOptionPlatform,
@@ -754,7 +759,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Native comms step 3: `transport.native_claude`, read at every launch and every send decision (a changed setting
   // reaches the next launch and the next send; seats need a relaunch to carry the inbox setting).
   // OF-180 N4: the answer is kept until the settings file or the env override changes (one stat per decision, no parse).
-  const nativeClaudeEnabled = nativeClaudeFlag(new ContextPackSettingsStore());
+  const nativeClaudeEnabled = nativeClaudeFlag(openSettingsStore());
   // workspaces-o9o.123: the launch adapter (built below) records Code Mode's one-time answer for a code_mode seat's restore too; this
   // runs only at restore time, after it exists.
   const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment, nativeInboxEnabled: nativeClaudeEnabled,
@@ -772,9 +777,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // reported (once; nothing is moved).
   const sharedDocsRootPath = resolveSharedDocsRoot();
   const prepareTeamWorkspace = (sessionName: string) => prepareCodexTeamWorkspace(sessionName,
-    new ContextPackSettingsStore().resolveConfig().workspaceRoot, sharedDocsRootPath, daemonHome);
+    openSettingsStore().resolveConfig().workspaceRoot, sharedDocsRootPath, daemonHome);
   // S2: a Codex seat's restart settles its seen store against the thread's rollout. `contextUsageStore` is read at the restart, not here.
-  const messagePumpEnabled = new ContextPackSettingsStore().resolveOne("transport.message_pump").value === true;
+  const messagePumpEnabled = openSettingsStore().resolveOne("transport.message_pump").value === true;
   const seatMessages = new MessageStore(db);
   // OF-278: the questions seats put to the human, and the messages that wait behind them.
   const { SqliteSeatQuestionStore } = await import("./adapters/seat-question-store.js");
@@ -809,19 +814,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // An invalid stored value (the setting validates on write, so this is a hand-edited file) reads as unset: nothing is linked.
   const piOperatorLoginDir = (): string | undefined => {
     try {
-      const value = new ContextPackSettingsStore().resolveOne("pi.operator_login_dir").value;
+      const value = openSettingsStore().resolveOne("pi.operator_login_dir").value;
       return typeof value === "string" && value.trim() ? value : undefined;
     } catch { return undefined; }
   };
   // OF-279: the member's pi.link_operator_models, by session name, for every launch and resume (like the model overrides).
   const piLinkOperatorModelsFor = piRetained.linkOperatorModelsFor;
   const piUsageFactsEnabled = (): boolean => {
-    try { return new ContextPackSettingsStore().resolveOne("usage.pi_cost_facts").value === true; } catch { return false; }
+    try { return openSettingsStore().resolveOne("usage.pi_cost_facts").value === true; } catch { return false; }
   };
   // OPR.0.7.0.2 K4: Pi seats look up OpenRouter's actual charge only while usage.pi_openrouter_charge is on (and
   // only alongside usage.pi_cost_facts); read at each launch and resume.
   const piOpenRouterChargeEnabled = (): boolean => {
-    try { return new ContextPackSettingsStore().resolveOne("usage.pi_openrouter_charge").value === true; } catch { return false; }
+    try { return openSettingsStore().resolveOne("usage.pi_openrouter_charge").value === true; } catch { return false; }
   };
   const piResume = new PiResumeAdapter(
     tmuxAdapter,
@@ -839,7 +844,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // The daemon passes pda's token file to the runner as a PATH and only lstats it (D1); usage.pda_cost_facts is read
   // at each launch; a launch or restore is refused while another seat holds the binding (one agent, one seat).
   const pdaUsageFactsEnabled = (): boolean => {
-    try { return new ContextPackSettingsStore().resolveOne("usage.pda_cost_facts").value === true; } catch { return false; }
+    try { return openSettingsStore().resolveOne("usage.pda_cost_facts").value === true; } catch { return false; }
   };
   const pdaAdapter = new PdaRuntimeAdapter({
     tmux: tmuxAdapter,
@@ -866,6 +871,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // workspaces-o9o.8/o9o.71: one seat lease store, read by the seat routes (rig seat lease, rig seat launch) and by restore.
   const seatLeaseStore = new SeatLeaseStore(nodePath.join(OPENRIG_HOME, "state", "seat-leases"));
   const restoreOrchestrator = new RestoreOrchestrator({
+    settings: daemonSettings,
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
     checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, ompResume, pdaResume,
     transcriptStore, serviceOrchestrator,
@@ -1029,8 +1035,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { PiRuntimeAdapter } = await import("./adapters/pi-runtime-adapter.js");
   const { OmpRuntimeAdapter } = await import("./adapters/omp-runtime-adapter.js");
 
-  const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
-  const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
+  const startupOrchestrator = new StartupOrchestrator({ readinessSettings: daemonSettings, db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
+  const runtimeSettings = openSettingsStore().resolveConfig();
   // workspaces-o9o.25: the seat plugin-copy prune's view of the disk: what a path is without following a link.
   const lstatKind = (p: string): "file" | "directory" | "symlink" | "other" | null => {
     try { const st = fs.lstatSync(p); return st.isSymbolicLink() ? "symlink" : st.isFile() ? "file" : st.isDirectory() ? "directory" : "other"; }
@@ -1057,12 +1063,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Operator can disable Codex hooks via OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED
   // or rig config set runtime.codex.hooks_enabled false.
   try {
-    const {
-      SettingsStore,
-      ensureDefaultClaudeCompactionFiles,
-    } = await import("./domain/user-settings/settings-store.js");
+    const { openSettingsStore: openStore, ensureDefaultClaudeCompactionFiles } = await import("./adapters/node-settings-file.js");
     ensureDefaultClaudeCompactionFiles(OPENRIG_HOME);
-    const settingsStore = new SettingsStore();
+    const settingsStore = openStore();
     const enabled = settingsStore.resolveOne("runtime.codex.hooks_enabled").value as boolean;
     let codexVersion: string | undefined;
     const codexVersionRow = db.prepare(
@@ -1149,7 +1152,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // OPR.0.5.9.5 Wave B — config-resolved canonical context library. The
     // shared instance initializer normally creates both roots; the mkdirs keep
     // direct createDaemon test harnesses compatible.
-    const userPacksRoot = new ContextPackSettingsStore().resolveOne("context.root").value as string;
+    const userPacksRoot = openSettingsStore().resolveOne("context.root").value as string;
     const [contextRoot, systemPacksRoot] = openRigContextLibraryRoots(userPacksRoot);
     try { fs.mkdirSync(systemPacksRoot, { recursive: true }); } catch { /* best-effort */ }
     const roots: Array<{ path: string; sourceType: "builtin" | "user_file" | "workspace" }> = [
@@ -1157,7 +1160,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       { path: systemPacksRoot, sourceType: "user_file" },
     ];
     try {
-      const settingsStore = new ContextPackSettingsStore();
+      const settingsStore = openSettingsStore();
       const cfg = settingsStore.resolveConfig();
       const workspacePacksRoot = nodePath.join(cfg.workspaceRoot, ".openrig", "context-packs");
       // Registered even before it exists: scan() skips a missing root, so a
@@ -1186,7 +1189,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       { path: userImagesRoot, sourceType: "user_file" },
     ];
     try {
-      const settingsStore = new ContextPackSettingsStore();
+      const settingsStore = openSettingsStore();
       const cfg = settingsStore.resolveConfig();
       const workspaceImagesRoot = nodePath.join(cfg.workspaceRoot, ".openrig", "agent-images");
       if (workspaceImagesRoot !== userImagesRoot && fs.existsSync(workspaceImagesRoot)) {
@@ -1238,13 +1241,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     probeSeatRuntime,
     // OPR.0.5.3.6 — shipped topology chain-file defaults install under the
     // typed topology.root at materialization (copy-if-absent).
-    topologyRootResolver: () => String(new ContextPackSettingsStore().resolveOne("topology.root").value),
+    topologyRootResolver: () => String(openSettingsStore().resolveOne("topology.root").value),
     onboardingEnabledResolver: () =>
-      new ContextPackSettingsStore().resolveOne("onboarding.default_pack.enabled").value === true,
+      openSettingsStore().resolveOne("onboarding.default_pack.enabled").value === true,
     skillsRootResolver: () =>
-      String(new ContextPackSettingsStore().resolveOne("skills.root").value),
+      String(openSettingsStore().resolveOne("skills.root").value),
     systemWorldResolver: () => {
-      const settings = new ContextPackSettingsStore();
+      const settings = openSettingsStore();
       const cfg = settings.resolveConfig();
       const selected = settings.resolveOne("context.system_world");
       return resolveSystemWorld({
@@ -1259,6 +1262,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const podBundleSourceResolver = new PodBundleSourceResolver();
 
   const bootstrapOrchestrator = new BootstrapOrchestrator({
+    settings: daemonSettings,
     db, bootstrapRepo, runtimeVerifier, probeRegistry,
     installPlanner: externalInstallPlanner, installExecutor: externalInstallExecutor,
     packageInstallService, rigInstantiator, fsOps: resolverFsOps,
@@ -1268,6 +1272,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // so the live library serves them on the first turn.
     routeBundleContents: (bundlePath) => routeBundleContents(bundlePath, {
       onContextPacksRouted: () => contextPackLibrary.scan(),
+      settings: openSettingsStore(),
     }),
   });
 
@@ -1333,7 +1338,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     resolveOccupantBootAt: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.bootAt ?? null,
   });
   const { HealthProjectionService, LiveContextHealthSource } = await import("./domain/health-detectors.js");
-  const healthSettingsStore = new ContextPackSettingsStore();
+  const healthSettingsStore = openSettingsStore();
   const contextHealthSource = new LiveContextHealthSource({
     db,
     rigRepo,
@@ -1467,7 +1472,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // OF-208: iOS simulator lifecycle. The cap is read fresh from the settings store on every sweep.
   // OF-221: the rig's Chief of Staff is told, once per rig per erase run, in its queue (no wake; the wake ladder escalates a long-pending item).
   const { makeSimulatorErasedNotifier } = await import("./domain/simulator-erased-notice.js");
-  const simulatorLifecycle = buildSimulatorLifecycle({ db, eventBus, settings: () => new ContextPackSettingsStore(), notifyErased: makeSimulatorErasedNotifier({ db, queue: queueRepoInstance }) });
+  const simulatorLifecycle = buildSimulatorLifecycle({ db, eventBus, settings: () => openSettingsStore(), notifyErased: makeSimulatorErasedNotifier({ db, queue: queueRepoInstance }) });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter, simulatorLifecycle,
   });
@@ -1642,7 +1647,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // PATH, HOME, CODEX_HOME and CLAUDE_CONFIG_DIR a seat session gets. Claude's windows are the seats' status-line
       // samples (usage_samples), read on every view.
       usageWindows: {
-        enabled: () => new ContextPackSettingsStore().resolveOne("provider.usage_windows").value === true,
+        enabled: () => openSettingsStore().resolveOne("provider.usage_windows").value === true,
         windows: new CodexUsageWindows({ read: codexUsageReader({ launchPath: process.env.PATH, home: daemonHome, codexHome }) }),
         claude: new ClaudeUsageWindows({
           readIdentity: claudeAuthStatusReader({ launchPath: process.env.PATH, home: daemonHome, claudeConfigDir: process.env.CLAUDE_CONFIG_DIR }),
@@ -1864,7 +1869,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const userSpecsRoot = getDefaultOpenRigPath("specs");
       const roots: string[] = [userSpecsRoot];
       try {
-        const settingsStore = new ContextPackSettingsStore();
+        const settingsStore = openSettingsStore();
         const cfg = settingsStore.resolveConfig();
         if (cfg.workspaceSpecsRoot && cfg.workspaceSpecsRoot !== userSpecsRoot) {
           roots.push(cfg.workspaceSpecsRoot);
@@ -1930,11 +1935,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // items only, never retroactive re-routing).
       exceptionDial: {
         hostDefault: () => {
-          const v = new ContextPackSettingsStore().resolveOne("workflow.exception_routing")
+          const v = openSettingsStore().resolveOne("workflow.exception_routing")
             .value as string | undefined;
           return v === "orchestrator" || v === "human_only" ? v : null;
         },
-        humanFallbackSeat: resolveWorkflowHumanDestination,
+        humanFallbackSeat: () => resolveWorkflowHumanDestination(openSettingsStore()),
       },
     });
     deps.workflowRuntime = workflowRuntime;
@@ -1950,7 +1955,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         queueRepo: queueRepoForWorkflow,
         resolveRoute: (name, version, cls, boundRig) =>
           workflowRuntime!.resolveExceptionRouteFor(name, version, cls, boundRig),
-        humanFallbackSeat: resolveWorkflowHumanDestination,
+        humanFallbackSeat: () => resolveWorkflowHumanDestination(openSettingsStore()),
         log: (line) => console.log(line),
       });
     }
@@ -2000,7 +2005,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     workflowRuntime.specCache.pruneNoiseDirRows(getOpenRigInstallRoot());
 
     try {
-      const settingsStore = new ContextPackSettingsStore();
+      const settingsStore = openSettingsStore();
       const cfg = settingsStore.resolveConfig();
       if (cfg.workspaceSpecsRoot) {
         deps.workflowsFolderDir = nodePath.join(cfg.workspaceSpecsRoot, "workflows");
@@ -2145,8 +2150,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     let resolvedSlicesRoot = "";
     let resolvedWorkspaceRoot = "";
     try {
-      const { SettingsStore: SettingsStoreCtor } = await import("./domain/user-settings/settings-store.js");
-      const resolvedConfig = new SettingsStoreCtor().resolveConfig();
+      const { openSettingsStore: openStore } = await import("./adapters/node-settings-file.js");
+      const resolvedConfig = openStore().resolveConfig();
       if (!legacyEnvSlicesRoot) {
         resolvedSlicesRoot = resolvedConfig.workspaceSlicesRoot;
       }
@@ -2170,6 +2175,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // S27 (OPR.0.5.6.27) — wire the execution view once the slices root is
     // resolved; the thunk re-reads nothing (path resolution stays startup's).
     viewProjectorInstance.setExecutionDeps({
+      settings: daemonSettings,
       db,
       slicesRoot: () => slicesRoot || null,
       // S19's locked one-oracle contract: the ARBITRATED seat-keyed read every
@@ -2331,8 +2337,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // Resolution: env > settings file > empty. SettingsStore handles
     // the env > file > default precedence; we just decode the raw
     // string into structured roots.
-    const { SettingsStore } = await import("./domain/user-settings/settings-store.js");
-    const settingsStore = new SettingsStore();
+    const { openSettingsStore: openStore } = await import("./adapters/node-settings-file.js");
+    const settingsStore = openStore();
     deps.settingsStore = settingsStore;
     const cfg = settingsStore.resolveConfig();
 
@@ -2408,7 +2414,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const postRestart = wirePostRestartPrompt({
       db,
       eventBus,
-      readSwitch: () => new ContextPackSettingsStore().resolveOne("recovery.post_restart_prompt").value === true,
+      readSwitch: () => openSettingsStore().resolveOne("recovery.post_restart_prompt").value === true,
       send: (sessionName, text, opts) => sessionTransport.send(sessionName, text, opts),
       outbox: outboxHandlerInstance,
       handOff: () => tmuxAdapter.messageHandOff ?? null,
@@ -2711,7 +2717,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     {
       const { ensureRsiStewardJobs } = await import("./domain/rsi/health-finding-wake.js");
       try {
-        const stewardSession = new ContextPackSettingsStore().resolveOne("rsi.steward_session").value;
+        const stewardSession = openSettingsStore().resolveOne("rsi.steward_session").value;
         const rsiJobs = ensureRsiStewardJobs(watchdogJobsRepoInstance, typeof stewardSession === "string" ? stewardSession : "");
         if (!rsiJobs.armed && rsiJobs.reason === "rsi_steward_invalid") {
           console.error(`[rsi] rsi.steward_session '${String(stewardSession)}' is not a '<member>@<rig>' session; RSI jobs disarmed (${rsiJobs.disarmed.length})`);
@@ -2905,7 +2911,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const { ClaudeCompactionEnforcer } = await import("./domain/claude-compaction-enforcer.js");
   const compactionEnforcer = deps.sessionTransport
     ? new ClaudeCompactionEnforcer(
-        new ContextPackSettingsStore(),
+        openSettingsStore(),
         deps.sessionTransport,
         // GHOST-STAGE (b): resolve the LIVE occupant generation (atom-B tenure ledger) for a session
         // so a stage minted by a retired generation is refused for the successor. null = UNKNOWN → the
@@ -3024,7 +3030,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   lateGatewayDispatch.fn = (op, ref, payload, opts) => gatewaySubsystem.dispatch(op, ref, payload, opts);
 
   // `ui.enabled` (default off): the web UI pages and its terminal WebSocket. Read once at start.
-  deps.webUiEnabled = opts?.webUiEnabled ?? new ContextPackSettingsStore().resolveOne("ui.enabled").value === true;
+  deps.webUiEnabled = opts?.webUiEnabled ?? openSettingsStore().resolveOne("ui.enabled").value === true;
   // /api browser boundary: this machine's exact Tailscale MagicDNS name, looked up on demand.
   deps.selfNameDiscovery = () => discoverTailscaleSelfNames({ timeoutMs: 1500 });
   deps.farDaemons = farDaemons;

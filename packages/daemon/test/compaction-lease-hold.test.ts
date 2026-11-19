@@ -19,7 +19,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ContextUsageStore } from "../src/domain/context-usage-store.js";
 import { ContextMonitor, DEFAULT_POLL_INTERVAL_MS } from "../src/domain/context-monitor.js";
 import { ClaudeCompactionEnforcer, POST_COMPACT_SEND_WAIT_MS_DEFAULT } from "../src/domain/claude-compaction-enforcer.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
@@ -101,7 +101,7 @@ describe("OF-247 (c): how long the compaction enforcer holds a seat's lifecycle 
     // A stand-in with the two members the enforcer reads here (as compaction-drain-readiness.test.ts has it); typed as `object` first so the cast is a plain narrowing.
     const stand: object = { deliveryGuard: guard, send: sendFake };
     const transport = stand as SessionTransport;
-    const settings = new SettingsStore(join(home, "settings.json"));
+    const settings = openSettingsStore(join(home, "settings.json"));
     settings.set("policies.claude_compaction.enabled", "true");
     settings.set("policies.claude_compaction.threshold_percent", "80");
     build = () => {

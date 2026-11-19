@@ -7,7 +7,7 @@ import { gatewayRoutes } from "../../daemon/src/routes/gateway.js";
 import { addHumanFragment, projectionPath } from "../../daemon/src/domain/gateway/human-registry.js";
 import { channelStateDigest, runChannelOperation } from "../../daemon/src/domain/gateway/channel-operations.js";
 import { DEFAULT_CONFIG, saveConfig, configPathFor } from "../../daemon/src/domain/gateway/slack/config.js";
-import { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../daemon/src/adapters/node-settings-file.js";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
 import { createViewState, emptySnapshot } from "../src/state.js";
@@ -38,7 +38,7 @@ beforeEach(() => {
     address: "alex@external", prefs: { deliveryClass: "B", availability: "focus" },
     connectorBindings: [{ kind: "slack", connectorRef: "primary", secretsRef: "vault://HIDDEN-REF", role: "primary", handle: "U-FIXTURE" }],
   }, home).ok).toBe(true);
-  const settings = new SettingsStore(join(home, "settings.json"));
+  const settings = openSettingsStore(join(home, "settings.json"));
   settings.set("host.name", "fixture-host");
   gateway = { state: "active", connector: { outboundReady: true, inboundReady: true, inbound: { state: "connected" }, configurationDigest: channelStateDigest(config) } };
   external = vi.fn(() => { throw new Error("No external calls in passive journey"); });

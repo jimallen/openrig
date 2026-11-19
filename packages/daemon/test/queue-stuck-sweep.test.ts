@@ -24,7 +24,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { QueueRepository, deriveCrossHostSuccessorId, type QueueItem } from "../src/domain/queue-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { archiveAgedTerminalTransitions } from "../src/domain/queue-retention.js";
 import type { HumanFragment } from "../src/domain/gateway/human-registry.js";
 
@@ -944,7 +944,7 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(mod.DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS).toBe(300);
     expect(mod.DEFAULT_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES).toBe(60);
     const missingConfig = `/tmp/openrig-s02-missing-${process.pid}-${Date.now()}.json`;
-    const store = new SettingsStore(missingConfig);
+    const store = openSettingsStore(missingConfig);
     expect(store.resolveOne("queue.stuck_sweep_interval_seconds" as never)).toMatchObject({
       value: 300,
       source: "default",

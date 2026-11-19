@@ -37,7 +37,7 @@ import {
 } from "./middleware/auth-bearer-token.js";
 import type { SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import type { ProviderService } from "./domain/provider/provider-service.js";
-import { SettingsStore } from "./domain/user-settings/settings-store.js";
+import { openSettingsStore } from "./adapters/node-settings-file.js";
 import { nodeInstancePrivacy } from "./adapters/instance-privacy-fs.js";
 import { securePrivateDb, securePrivateRoot } from "./domain/instance-privacy.js";
 import {
@@ -177,12 +177,12 @@ export function startStuckSweepScheduler(deps: {
   const runOnce = (): void => {
     // runStuckSweep never throws (failure is recorded loudly on the status surface);
     // the catch is the never-crash-the-daemon belt for the promise chain itself.
-    void runStuckSweep({ db, queueRepo, status, credentialFiles: nodeCredentialFileReader }).catch((err: unknown) => {
+    void runStuckSweep({ db, queueRepo, status, credentialFiles: nodeCredentialFileReader, settings: openSettingsStore() }).catch((err: unknown) => {
       console.error(`[stuck-sweep] scheduler error: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
   runOnce(); // boot sweep (fire-and-forget)
-  return setInterval(runOnce, resolveStuckSweepIntervalSeconds() * 1000);
+  return setInterval(runOnce, resolveStuckSweepIntervalSeconds(openSettingsStore()) * 1000);
 }
 
 /** S01 (OPR.0.5.5.1) — start the WAKE-OR-ESCALATE ladder: batons whose wake failed retry
@@ -219,6 +219,7 @@ export function startWakeLadderScheduler(deps: {
     : undefined;
   const scheduler = new WakeLadderScheduler({
     runTick: () => runWakeLadderTick({
+      settings: openSettingsStore(),
       db,
       queueRepo,
       status,
@@ -235,7 +236,7 @@ export function startWakeLadderScheduler(deps: {
         ? { usageLimitJitterSeconds: deps.usageLimitJitterSeconds }
         : {}),
     }),
-    tickIntervalMs: resolveWakeRetryIntervalSeconds() * 1000,
+    tickIntervalMs: resolveWakeRetryIntervalSeconds(openSettingsStore()) * 1000,
   });
   scheduler.start();
   return scheduler;
@@ -246,7 +247,7 @@ export async function startServer(port?: number, opts?: { realSimctl?: boolean }
   // D15 — anchor the default db under OPENRIG_HOME, never a bare CWD-relative
   // filename (which could open the shared fleet db). Explicit OPENRIG_DB wins.
   const dbPath = resolveDaemonDbPath(readOpenRigEnv("OPENRIG_DB", "RIGGED_DB"), OPENRIG_HOME);
-  const instanceConfig = new SettingsStore().resolveConfig();
+  const instanceConfig = openSettingsStore().resolveConfig();
   const instancePrivacy = nodeInstancePrivacy();
   const initialization = ensureOpenRigInstance({
     home: OPENRIG_HOME,

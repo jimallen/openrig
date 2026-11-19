@@ -1,7 +1,7 @@
 import { defaultResolveOrchestrator } from "./queue-owner.js";
 import type Database from "better-sqlite3";
 import { resolvePickupThresholdMinutes } from "./queue-pickup.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import type { ArbitratedSeatState } from "./activity-taxonomy.js";
 import { nextDueAt } from "./watchdog-due.js";
 import type { WatchdogJob } from "./watchdog-jobs-repository.js";
@@ -35,14 +35,14 @@ export function pendingSince(db: Database.Database, id: string): string | null {
   if (!row || row.previous_state === null) return (db.prepare("SELECT ts_created FROM queue_items WHERE qitem_id = ?").get(id) as { ts_created: string } | undefined)?.ts_created ?? null;
   return row.ts;
 }
-function unclaimedSeconds(): number {
-  const value = Number(new SettingsStore().resolveOne("queue.stuck_sweep_unclaimed_age_minutes").value);
+function unclaimedSeconds(settings: SettingsReader): number {
+  const value = Number(settings.resolveOne("queue.stuck_sweep_unclaimed_age_minutes").value);
   return (Number.isFinite(value) && value > 0 ? value : 60) * 60;
 }
 
-function sweepSeconds(): number {
+function sweepSeconds(settings: SettingsReader): number {
   try {
-    const value = Number(new SettingsStore().resolveOne("queue.stuck_sweep_interval_seconds").value);
+    const value = Number(settings.resolveOne("queue.stuck_sweep_interval_seconds").value);
     return Number.isFinite(value) && value > 0 ? value : 300;
   } catch { return 300; }
 }
@@ -62,7 +62,7 @@ export interface WaitingView {
   attention?: { scope: string; revision: string; source: "last observed by wait timer" };
 }
 
-export function readWaitingView(db: Database.Database, id: string, readActivity?: WaitingActivityReader): WaitingView | null {
+export function readWaitingView(db: Database.Database, id: string, readActivity?: WaitingActivityReader, settings: SettingsReader = DEFAULT_SETTINGS): WaitingView | null {
   const row = db.prepare(`SELECT qitem_id, source_session, destination_session, state, blocked_on, closure_required_at
     FROM queue_items WHERE qitem_id = ?`).get(id) as {
     qitem_id: string; source_session: string; destination_session: string; state: string; blocked_on: string | null; closure_required_at: string | null;
@@ -77,7 +77,7 @@ export function readWaitingView(db: Database.Database, id: string, readActivity?
   let observed: ReturnType<WaitingActivityReader> = null;
   try { observed = readActivity?.(subject) ?? null; } catch { /* unavailable remains unknown */ }
   const meaningful = lastMeaningfulTransition(db, row.blocked_on?.startsWith("qitem-") ? row.blocked_on : id);
-  const sweepInterval = sweepSeconds();
+  const sweepInterval = sweepSeconds(settings);
   const view: WaitingView = {
     obligation: id, owner: row.destination_session, state: row.state, actionableSince: row.state === "pending" ? pendingSince(db, id) : null,
     blocker: row.blocked_on ? { ref: row.blocked_on, owner: blocker?.destination_session ?? null, state: blocker?.state ?? null } : null,
@@ -88,7 +88,7 @@ export function readWaitingView(db: Database.Database, id: string, readActivity?
   };
   if (row.state === "pending" || row.state === "in-progress") {
     const base = row.state === "pending" ? view.actionableSince : meaningful?.at;
-    const delay = row.state === "pending" ? unclaimedSeconds() : resolvePickupThresholdMinutes() * 60;
+    const delay = row.state === "pending" ? unclaimedSeconds(settings) : resolvePickupThresholdMinutes(settings) * 60;
     view.nextBackstop.owner = recoveryOwner ?? row.destination_session;
     view.nextBackstop.dueAt = base ? new Date(Date.parse(base) + delay * 1000).toISOString() : null;
     view.nextBackstop.mechanism = row.state === "pending" ? "queue-stuck-sweep:unclaimed" : "queue-stuck-sweep:pickup (activity checked at detection)";
@@ -115,7 +115,7 @@ export function readWaitingView(db: Database.Database, id: string, readActivity?
         if (state?.evidence?.attention?.scope && state.attentionRevision) view.attention = { scope: state.evidence.attention.scope, revision: state.attentionRevision, source: "last observed by wait timer" };
       } catch { /* operator YAML has no queue notice */ }
       if (notice) view.nextBackstop = { owner: recoveryOwner ?? row.source_session, mechanism: `unconsumed wait notice; delivery=${notice.deliveryStatus}`, intervalSeconds: sweepInterval,
-        dueAt: new Date(Date.parse(notice.at) + resolvePickupThresholdMinutes() * 60_000).toISOString() };
+        dueAt: new Date(Date.parse(notice.at) + resolvePickupThresholdMinutes(settings) * 60_000).toISOString() };
     }
   }
   if (!["pending", "in-progress", "blocked"].includes(row.state)) view.nextBackstop = { owner: row.destination_session, mechanism: "none (terminal obligation)", dueAt: null, intervalSeconds: null };

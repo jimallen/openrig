@@ -11,7 +11,7 @@ import { ContextUsageStore } from "../src/domain/context-usage-store.js";
 import { UsageSamplesStore } from "../src/domain/usage-samples-store.js";
 import { ContextMonitor } from "../src/domain/context-monitor.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import type { SessionTransport } from "../src/domain/session-transport.js";
 import type { ReadinessResult } from "../src/domain/runtime-adapter.js";
 import { EventBus } from "../src/domain/event-bus.js";
@@ -153,7 +153,7 @@ describe("ContextMonitor", () => {
   };
 
   function installRealCompactionEnforcer() {
-    const settings = new SettingsStore(join(tmpDir, "settings.json"));
+    const settings = openSettingsStore(join(tmpDir, "settings.json"));
     settings.set("policies.claude_compaction.enabled", "true");
     settings.set("policies.claude_compaction.threshold_percent", "80");
     const send = vi.fn(async (_session: string, text: string) => {

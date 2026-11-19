@@ -33,6 +33,7 @@ import { handoverTextId } from "./seat-messaging/long-message.js";
 import { PUMP_PAUSE_RECHECK_MS } from "./seat-messaging/message-pump.js";
 import { messageId } from "./seat-messaging/ports.js";
 import { blockingChecks, describeHeld, RELAUNCH_CHECK_NAMES, type OccupantReplacementChecks, type RelaunchCheckName, type RelaunchChecks } from "./relaunch-checks.js";
+import type { SettingsReader } from "./user-settings/settings-store.js";
 
 /**
  * How long a handover waits for the gate to record its packet. Under the pump's pause recheck on purpose: a typed attempt from the pump's
@@ -161,6 +162,9 @@ interface BindingOwnerRow {
 }
 
 interface SeatHandoverServiceDeps {
+  /** The daemon's settings, for the successor launcher this service builds (the readiness window); DEFAULT_SETTINGS when absent
+   *  (workspaces-6ul). */
+  settings?: SettingsReader;
   db: Database.Database;
   rigRepo: RigRepository;
   sessionRegistry: SessionRegistry;
@@ -317,6 +321,7 @@ export class SeatHandoverService {
       newId: deps.newSuccessorId,
       runtimeAdapters: deps.runtimeAdapters,
       readinessTimeoutMs: deps.readinessTimeoutMs,
+      readinessSettings: deps.settings,
       sleep: deps.sleep,
       tmuxOptionDefaults: deps.tmuxOptionDefaults,
       ...(deps.codexConfigWritePolicy ? { codexConfigWritePolicy: deps.codexConfigWritePolicy } : {}),

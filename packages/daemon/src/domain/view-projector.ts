@@ -2,6 +2,7 @@ import type { ProjectRead } from "./workspace/project-read.js";
 import type Database from "better-sqlite3";
 import { lastMeaningfulTransition } from "./queue-waiting.js";
 import { derivePickup } from "./queue-pickup.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { ulid } from "ulid";
 import type { EventBus } from "./event-bus.js";
 import { buildExecutionView, type ExecutionViewDeps } from "./execution-view.js";
@@ -106,15 +107,18 @@ export class ViewProjector {
   readonly db: Database.Database;
   private readonly eventBus: EventBus;
   private readonly now: () => Date;
+  /** The daemon's settings (the pickup stall threshold); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+  private readonly settings: SettingsReader;
 
   constructor(
     db: Database.Database,
     eventBus: EventBus,
-    opts?: { now?: () => Date },
+    opts?: { now?: () => Date; settings?: SettingsReader },
   ) {
     this.db = db;
     this.eventBus = eventBus;
     this.now = opts?.now ?? (() => new Date());
+    this.settings = opts?.settings ?? DEFAULT_SETTINGS;
   }
 
   // S27 — execution-view wiring (startup calls this once the slices root
@@ -206,7 +210,7 @@ export class ViewProjector {
           claimedAt: (r.claimed_at as string | null) ?? null,
           lastHeartbeat: (r.last_heartbeat as string | null) ?? null,
           postClaimMotionCount: Number(r.post_claim_motion ?? 0),
-        });
+        }, this.settings);
         return {
           ...r,
           pickup_state: receipt.state,

@@ -31,6 +31,7 @@ import { routeBundleContents, routingFailureWarnings, type BundleContentRouting 
 import { ContextPackLibraryService } from "../src/domain/context-packs/context-pack-library-service.js";
 import type { ExecFn } from "../src/adapters/tmux.js";
 import type { FsOps } from "../src/domain/package-resolver.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 const RIG_YAML = `
 version: "0.2"
@@ -159,7 +160,7 @@ describe("bundle contents are routed before any seat launches", () => {
   });
 
   function orchestrator(route?: (bundlePath: string) => Promise<BundleContentRouting>): BootstrapOrchestrator {
-    return new BootstrapOrchestrator({
+    return new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: noExec, db }),
@@ -186,7 +187,7 @@ describe("bundle contents are routed before any seat launches", () => {
       bundleSourceResolver: new LegacyBundleSourceResolver({ fsOps: realFsOps() }),
       podBundleSourceResolver: new PodBundleSourceResolver(),
       podInstantiator: podInstantiator as never,
-      routeBundleContents: route ?? ((p) => routeBundleContents(p, { onContextPacksRouted: () => { rescans += 1; } })),
+      routeBundleContents: route ?? ((p) => routeBundleContents(p, { settings: openSettingsStore(), onContextPacksRouted: () => { rescans += 1; } })),
     });
   }
 
@@ -254,7 +255,7 @@ describe("bundle contents are routed before any seat launches", () => {
     const badBundle = await buildBundleWithPack(fs.mkdtempSync(path.join(workDir, "bad-")), "name: demo\ntaxonomy: world\nfiles:\n  - path: intro.md\n    role: overview\n");
     const library = new ContextPackLibraryService({ roots: [{ path: contextRoot, sourceType: "user_file" }] });
 
-    const result = await orchestrator((p) => routeBundleContents(p, { onContextPacksRouted: () => library.scan() })).bootstrap({
+    const result = await orchestrator((p) => routeBundleContents(p, { settings: openSettingsStore(), onContextPacksRouted: () => library.scan() })).bootstrap({
       mode: "apply", sourceRef: badBundle, sourceKind: "rig_bundle", targetRoot: path.join(workDir, "target-bad"),
     });
 

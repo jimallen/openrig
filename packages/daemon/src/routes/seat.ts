@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-store.js";
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
-import { SettingsStore } from "../domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../adapters/node-settings-file.js";
 import { transportSenderSession } from "./require-sender-identity.js";
 import { listQueued } from "../domain/seat-messaging/queued-messages.js";
 import { SqliteQueuedMessages } from "../adapters/sqlite-queued-messages.js";
@@ -118,6 +118,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const rigRepo = c.get("rigRepo" as never) as RigRepository;
   const service = new SeatHandoverService({
+    settings: openSettingsStore(),
     credentialFiles: nodeCredentialFileReader, // workspaces-o9o.151: judges a codex successor seat's auth.json link
     db: rigRepo.db,
     rigRepo,
@@ -175,7 +176,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // the path tried (a seat-id/directory mapping gap surfaces loudly at the
     // door drive instead of silently).
     authoredRecapResolver: (seatRef: string) => {
-      const topologyRoot = String(new SettingsStore().resolveOne("topology.root").value);
+      const topologyRoot = String(openSettingsStore().resolveOne("topology.root").value);
       return resolveAuthoredRecapPointer(seatRef, topologyRoot);
     },
     // OPR.0.5.5.5 (fix B3) — the ONE production rebuild priming chain builder
@@ -183,7 +184,7 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // when the seat's restore-pending marker names one, superseded recaps
     // newest-first. Declares only; the service existence-filters (named gaps).
     rebuildPrimingResolver: (seatRef: string) => buildRebuildPrimingChain(seatRef, {
-      topologyRoot: String(new SettingsStore().resolveOne("topology.root").value),
+      topologyRoot: String(openSettingsStore().resolveOne("topology.root").value),
       openrigHome: OPENRIG_HOME,
     }),
     // OPR.0.4.6.PI1 FR-6 — the Pi adapter in the runtime-adapter map exposes

@@ -15,41 +15,15 @@
 // resolveWorkspacePaths) project the raw strings into structured data
 // the daemon's UEP routes + Slice Story View consume.
 
-import { writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSync, readlinkSync, statSync, chmodSync, chownSync, openSync, closeSync, renameSync, constants, fstatSync, readSync, fchmodSync, realpathSync } from "node:fs";
-import { credentialFileOpsFrom, OPENRIG_CONFIG_POLICY, readOwnFileWith } from "../credential-file.js";
-import { randomUUID } from "node:crypto";
 import * as path from "node:path";
-import * as os from "node:os";
+import type { SettingsFile } from "./settings-file.js";
 import { resolveSharedDocsRigsRoot } from "../../openrig-compat.js";
 
-const DEFAULT_CONFIG_PATH = path.join(
-  process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
-  "config.json",
-);
-
-const DEFAULT_WORKSPACE_ROOT = path.join(
-  process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
-  "workspace",
-);
-
-// OPR.0.5.3.6 D1/D2 — the topology tree's derived default. The instance
-// altitude is the TOP of this root: <root>/<CHAIN>.md, then
-// <root>/rigs/<rig>/<CHAIN>.md, then <root>/rigs/<rig>/seats/<seat>/<CHAIN>.md.
-const DEFAULT_TOPOLOGY_ROOT = path.join(
-  process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
-  "topology",
-);
-
-// OPR.0.5.9.5 Wave B — canonical addressable context library.
-const DEFAULT_CONTEXT_ROOT = path.join(
-  process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
-  "context",
-);
-
-const DEFAULT_SKILLS_ROOT = path.join(
-  process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
-  "skills",
-);
+// The instance home the path defaults derive from (OPENRIG_HOME, else ~/.openrig) is resolved by the config.json adapter
+// (adapters/node-settings-file.ts, workspaces-6ul) and handed to the store; the domain reads no environment for it.
+// OPR.0.5.3.6 D1/D2 — the topology tree's derived default (<home>/topology). The instance altitude is the TOP of this root:
+// <root>/<CHAIN>.md, then <root>/rigs/<rig>/<CHAIN>.md, then <root>/rigs/<rig>/seats/<seat>/<CHAIN>.md.
+// OPR.0.5.9.5 Wave B — <home>/context is the canonical addressable context library.
 
 /** OPR.0.5.3.6 — the LEGACY topology location, ruled an arbitrary folder
  *  (founder, 2026-08-14) but kept readable so pre-convention rigs migrate
@@ -601,29 +575,26 @@ when this session needs more context than the canonical claude-compaction-restor
 skill provides.
 `;
 
-export function defaultClaudeCompactionExtraInstructionFilePath(openrigHome = path.dirname(DEFAULT_CONFIG_PATH)): string {
+export function defaultClaudeCompactionExtraInstructionFilePath(openrigHome: string): string {
   return path.join(openrigHome, DEFAULT_CLAUDE_COMPACTION_EXTRA_INSTRUCTION_RELATIVE_PATH);
 }
 
-export function ensureDefaultClaudeCompactionFiles(openrigHome = path.dirname(DEFAULT_CONFIG_PATH)): string {
-  const filePath = defaultClaudeCompactionExtraInstructionFilePath(openrigHome);
-  if (!existsSync(filePath)) {
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    writeFileSync(filePath, DEFAULT_CLAUDE_COMPACTION_EXTRA_INSTRUCTION_FILE_CONTENT, "utf-8");
-  }
-  return filePath;
-}
+/** The keys whose default is a path under the instance home or the workspace root: a reader with no home has no default for them. */
+const HOME_DERIVED_KEYS: ReadonlySet<SettingsValidKey> = new Set<SettingsValidKey>([
+  "db.path", "transcripts.path", "workspace.root", "topology.root", "context.root", "skills.root",
+  "policies.claude_compaction.message_file_path", ...WORKSPACE_DERIVED_KEYS,
+]);
 
-function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string | number | boolean {
+function getDefaultValue(key: SettingsValidKey, workspaceRoot: string, home: string): string | number | boolean {
   if (WORKSPACE_DERIVED_KEYS.has(key)) {
     return deriveWorkspaceDefault(key, workspaceRoot);
   }
   switch (key) {
     case "daemon.port": return 7433;
     case "daemon.host": return "127.0.0.1";
-    case "db.path": return path.join(path.dirname(DEFAULT_CONFIG_PATH), "openrig.sqlite");
+    case "db.path": return path.join(home, "openrig.sqlite");
     case "transcripts.enabled": return true;
-    case "transcripts.path": return path.join(path.dirname(DEFAULT_CONFIG_PATH), "transcripts");
+    case "transcripts.path": return path.join(home, "transcripts");
     // V1 pre-release CLI/daemon Item 1 — capture-pane rotation defaults.
     case "transcripts.lines": return 1000;
     case "transcripts.poll_interval_seconds": return 2;
@@ -633,12 +604,12 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "host.selected": return "local";
     // OPR.0.4.6.MH1 FR-4 — the own-host display-name default (PRD-named).
     case "host.name": return "localhost";
-    case "workspace.root": return DEFAULT_WORKSPACE_ROOT;
+    case "workspace.root": return path.join(home, "workspace");
     // OPR.0.5.3.6 D1 — derived under $OPENRIG_HOME, never a shared-docs literal.
-    case "topology.root": return DEFAULT_TOPOLOGY_ROOT;
-    case "context.root": return DEFAULT_CONTEXT_ROOT;
+    case "topology.root": return path.join(home, "topology");
+    case "context.root": return path.join(home, "context");
     case "context.system_world": return "default";
-    case "skills.root": return DEFAULT_SKILLS_ROOT;
+    case "skills.root": return path.join(home, "skills");
     case "onboarding.default_pack.enabled": return true;
     case "launch.non_interruptive": return false;
     case "health.context_pressure.warning_percent": return 95;
@@ -683,7 +654,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "policies.claude_compaction.pre_compact_instruction": return DEFAULT_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION;
     case "policies.claude_compaction.compact_instruction": return DEFAULT_CLAUDE_COMPACTION_COMPACT_INSTRUCTION;
     case "policies.claude_compaction.message_inline": return DEFAULT_CLAUDE_COMPACTION_RESTORE_INSTRUCTION;
-    case "policies.claude_compaction.message_file_path": return defaultClaudeCompactionExtraInstructionFilePath();
+    case "policies.claude_compaction.message_file_path": return defaultClaudeCompactionExtraInstructionFilePath(home);
     case "policies.claude_compaction.post_restore_audit_instruction": return DEFAULT_CLAUDE_COMPACTION_POST_RESTORE_AUDIT_INSTRUCTION;
     case "policies.idle_gate_qitem.scan_interval_seconds": return 60;
     case "policies.idle_gate_qitem.active_wake_interval_seconds": return 900;
@@ -731,7 +702,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
 }
 
 function coerceValue(key: SettingsValidKey, raw: string, workspaceRoot: string): string | number | boolean {
-  const def = getDefaultValue(key, workspaceRoot);
+  const def = getDefaultValue(key, workspaceRoot, "");   // only the default's type is read here
   if (typeof def === "number") {
     const n = parseInt(raw, 10);
     if (isNaN(n)) throw new Error(`Invalid value for ${key}: expected a number, got "${raw}"`);
@@ -1004,11 +975,32 @@ export interface ResolvedConfig {
   transportMessagePump: boolean;
 }
 
-export class SettingsStore {
+/** What the domain needs of the settings: one resolved key (env > file > default), read afresh on every call. */
+export interface SettingsReader {
+  resolveOne(key: SettingsValidKey, fileConfig?: Record<string, unknown>, workspaceRoot?: string): ResolvedSetting;
+}
+
+/**
+ * The null object for a domain caller handed no settings (workspaces-6ul, CoS ruling A2): every key resolves to its built-in
+ * default, with nothing read (no config.json, no environment). A key whose default is a path under the instance home has none
+ * here, so it throws, naming the key, rather than invent a path. The daemon passes its real SettingsStore at every src site
+ * (pinned by test/settings-reader-injection.test.ts); this is what a unit test that builds a domain object gets by default.
+ */
+export const DEFAULT_SETTINGS: SettingsReader = {
+  resolveOne(key: SettingsValidKey): ResolvedSetting {
+    if (HOME_DERIVED_KEYS.has(key)) throw new Error(`${key} has no default without an OpenRig home; this caller needs the daemon's settings`);
+    const value = getDefaultValue(key, "", "");
+    return { value, source: "default", defaultValue: value };
+  },
+};
+
+export class SettingsStore implements SettingsReader {
   readonly configPath: string;
 
-  constructor(configPath?: string) {
-    this.configPath = configPath ?? DEFAULT_CONFIG_PATH;
+  /** `file` is config.json (adapters/node-settings-file.ts in the daemon); `home` is the instance home the path defaults derive
+   *  from (OPENRIG_HOME, else ~/.openrig), whatever folder `file` lives in. */
+  constructor(private readonly file: SettingsFile, readonly home: string) {
+    this.configPath = file.path;
   }
 
   resolveOne(key: SettingsValidKey, fileConfig?: Record<string, unknown>, workspaceRoot?: string): ResolvedSetting {
@@ -1042,7 +1034,7 @@ export class SettingsStore {
   }
 
   private resolveOneUnpaired(key: SettingsValidKey, fc: Record<string, unknown>, wr: string): ResolvedSetting {
-    const defaultValue = getDefaultValue(key, wr);
+    const defaultValue = getDefaultValue(key, wr, this.home);
     // Slice 27 BLOCKING-FIX-2 — env override is validated; on invalid
     // env, drop the override + warn so the operator sees the
     // misconfiguration on daemon stderr (which captures-pane / log
@@ -1151,66 +1143,18 @@ export class SettingsStore {
   // GHOST-STAGE (d) twin of the CLI ConfigStore guard: verify-readback + fail-loud. After a write,
   // re-read this.configPath (the canonical config) and confirm the value persisted; a mismatch means
   // the write silently did not take, so REFUSE loudly rather than report a phantom success
-  // (config-set-success-without-persist). The daemon already writes canonical (DEFAULT_CONFIG_PATH),
+  // (config-set-success-without-persist). The daemon already writes canonical (the default config.json),
   // so this is the defense-in-depth half of the paired fix.
-  /** Publish a complete config without truncating the previous usable file. */
+  /** Publish a complete config without truncating the previous usable file (the adapter's write: parent folder created, a link
+   *  followed, the target replaced atomically). */
   private writeConfig(content: string): void {
-    let target = this.configPath;
-    // Follow config-file links just as writeFileSync did; rename the target,
-    // never the link. A dangling final target is still created normally.
-    for (let depth = 0; ; depth++) {
-      const entry = lstatSync(target, { throwIfNoEntry: false });
-      if (!entry?.isSymbolicLink()) break;
-      if (depth >= 40) throw Object.assign(new Error("Too many config symlinks"), { code: "ELOOP" });
-      target = path.resolve(path.dirname(target), readlinkSync(target));
-    }
-    const existing = statSync(target, { throwIfNoEntry: false });
-    // Match direct writes: a writable directory must not bypass a read-only
-    // target. Opening without truncation also checks native ACL permissions.
-    if (existing) closeSync(openSync(target, "r+"));
-    const temporary = `${target}.tmp-${randomUUID()}`;
-    let owned = false;
-    let canFallBack = true;
-    try {
-      // Atomic replacement requires directory create/rename permission. Keep
-      // staged bytes private until the original ownership and mode are restored.
-      const fd = openSync(temporary, "wx", 0o600);
-      owned = true;
-      // A failed data write must never retry against the original file.
-      canFallBack = false;
-      try { writeFileSync(fd, content, "utf-8"); } finally { closeSync(fd); }
-      canFallBack = true;
-      if (existing && process.platform !== "win32") {
-        const staged = statSync(temporary);
-        if (staged.uid !== existing.uid || staged.gid !== existing.gid) {
-          try { chownSync(temporary, existing.uid, existing.gid); }
-          catch (error) {
-            throw Object.assign(new Error(`Cannot preserve config ownership at ${target}: ${(error as Error).message}`),
-              { code: (error as NodeJS.ErrnoException).code });
-          }
-        }
-      }
-      // chown may clear permission bits, so apply the final mode afterward.
-      chmodSync(temporary, existing ? existing.mode & 0o777 : 0o666 & ~process.umask());
-      renameSync(temporary, target);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (canFallBack && (code === "EACCES" || code === "EPERM" || code === "EBUSY")) {
-        // Preserve setups that permit writing the file but not replacing it,
-        // such as an unwritable parent or a single-file bind mount.
-        writeFileSync(target, content, "utf-8");
-        return;
-      }
-      throw error;
-    } finally {
-      if (owned) try { unlinkSync(temporary); } catch { /* Renamed or already removed. */ }
-    }
+    this.file.write(content);
   }
 
   private verifyPersisted(keyPath: string[], expected: unknown): void {
     let reread: Record<string, unknown>;
     try {
-      reread = JSON.parse(readConfigText(this.configPath) ?? "") as Record<string, unknown>;
+      reread = JSON.parse(this.readConfigText() ?? "") as Record<string, unknown>;
     } catch (e) {
       throw new Error(
         `config write did NOT persist: could not read it back at ${this.configPath} (${(e as Error).message}). Refusing to report success.`,
@@ -1235,7 +1179,6 @@ export class SettingsStore {
       const coercedDyn = coerceFeedHostSubscriptionValue(key, value);
       const fcDyn = this.readConfigFile();
       setNestedValue(fcDyn, ["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
-      mkdirSync(path.dirname(this.configPath), { recursive: true });
       this.writeConfig(JSON.stringify(fcDyn, null, 2) + "\n");
       this.verifyPersisted(["feed", "subscriptions", feedHost.hostId, "enabled"], coercedDyn);
       return;
@@ -1249,14 +1192,13 @@ export class SettingsStore {
     setNestedValue(fc, KEY_TO_PATH[key], coerced);
     if (key === "health.context_pressure.warning_percent" || key === "health.context_pressure.critical_percent") {
       const warning = getNestedValue(fc, KEY_TO_PATH["health.context_pressure.warning_percent"])
-        ?? getDefaultValue("health.context_pressure.warning_percent", wr);
+        ?? getDefaultValue("health.context_pressure.warning_percent", wr, this.home);
       const critical = getNestedValue(fc, KEY_TO_PATH["health.context_pressure.critical_percent"])
-        ?? getDefaultValue("health.context_pressure.critical_percent", wr);
+        ?? getDefaultValue("health.context_pressure.critical_percent", wr, this.home);
       if ((warning as number) >= (critical as number)) {
         throw new Error(`Invalid context-pressure policy: warning (${warning}) must be less than critical (${critical})`);
       }
     }
-    mkdirSync(path.dirname(this.configPath), { recursive: true });
     this.writeConfig(JSON.stringify(fc, null, 2) + "\n");
     this.verifyPersisted(KEY_TO_PATH[key], coerced);
   }
@@ -1303,9 +1245,7 @@ export class SettingsStore {
 
   reset(key?: string): void {
     if (key === undefined) {
-      try { unlinkSync(this.configPath); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+      this.file.remove();
       return;
     }
     const removedMessage = removedContextSettingMessage(key);
@@ -1314,7 +1254,7 @@ export class SettingsStore {
     // (unsubscribe leaves no residue).
     const feedHost = parseFeedHostSubscriptionKey(key);
     if (feedHost) {
-      if (!existsSync(this.configPath)) return;
+      if (!this.file.exists()) return;
       const fcDyn = this.readConfigFile();
       const parent = getNestedValue(fcDyn, ["feed", "subscriptions"]) as Record<string, unknown> | undefined;
       if (parent && feedHost.hostId in parent) delete parent[feedHost.hostId];
@@ -1324,7 +1264,7 @@ export class SettingsStore {
     if (!isSettingsValidKey(key)) {
       throw new Error(`Unknown config key "${key}". Valid keys: ${SETTINGS_VALID_KEYS.join(", ")}`);
     }
-    if (!existsSync(this.configPath)) return;
+    if (!this.file.exists()) return;
     const fc = this.readConfigFile();
     const parts = KEY_TO_PATH[key];
     const parent = getNestedValue(fc, parts.slice(0, -1)) as Record<string, unknown> | undefined;
@@ -1333,9 +1273,9 @@ export class SettingsStore {
       if (key === "health.context_pressure.warning_percent" || key === "health.context_pressure.critical_percent") {
         const workspaceRoot = this.resolveWorkspaceRootRaw(fc);
         const warning = getNestedValue(fc, KEY_TO_PATH["health.context_pressure.warning_percent"])
-          ?? getDefaultValue("health.context_pressure.warning_percent", workspaceRoot);
+          ?? getDefaultValue("health.context_pressure.warning_percent", workspaceRoot, this.home);
         const critical = getNestedValue(fc, KEY_TO_PATH["health.context_pressure.critical_percent"])
-          ?? getDefaultValue("health.context_pressure.critical_percent", workspaceRoot);
+          ?? getDefaultValue("health.context_pressure.critical_percent", workspaceRoot, this.home);
         if ((warning as number) >= (critical as number)) {
           throw new Error(`Invalid context-pressure policy: warning (${warning}) must be less than critical (${critical})`);
         }
@@ -1349,12 +1289,21 @@ export class SettingsStore {
     if (envVal) return envVal;
     const fileVal = getNestedValue(fileConfig, KEY_TO_PATH["workspace.root"]) as string | undefined;
     if (fileVal) return fileVal;
-    return DEFAULT_WORKSPACE_ROOT;
+    return path.join(this.home, "workspace");
+  }
+
+  /** config.json under the credential rule (workspaces-o9o.160; the adapter reads it): it may be a link, whose real target is
+   *  judged; group/other write on that file of ours is narrowed. Null when absent; any other refusal throws, naming the fix. */
+  private readConfigText(): string | null {
+    const read = this.file.read();
+    if (read.ok) return read.content;
+    if (read.problem === "missing") return null;
+    throw new Error(`refusing to read the OpenRig config: ${read.message}`);
   }
 
   private readConfigFile(): Record<string, unknown> {
     let parsed: Record<string, unknown> = {};
-    const raw = readConfigText(this.configPath);
+    const raw = this.readConfigText();
     if (raw !== null) {
       try {
         parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -1392,19 +1341,3 @@ export function parseNamedPairs(raw: string): NamedPair[] {
   return Array.from(out.entries()).map(([name, path]) => ({ name, path }));
 }
 
-/**
- * workspaces-o9o.160: config.json is read under the credential rule's procedure, with the node:fs this module already imports (CoS
- * 13:38Z option B; moving this I/O out of domain/ is workspaces-6ul). It may be a link (the writer follows one by design), whose real
- * target is judged; group/other write on that file of ours is narrowed, never refused. Null when absent; any other refusal throws,
- * naming the file and the fix.
- */
-const configFileOps = credentialFileOpsFrom(
-  { constants, openSync, fstatSync, readSync, fchmodSync, closeSync, lstatSync, realpathSync },
-  () => (typeof process.getuid === "function" ? process.getuid() : -1),
-);
-function readConfigText(configPath: string): string | null {
-  const read = readOwnFileWith(configFileOps, configPath, OPENRIG_CONFIG_POLICY);
-  if (read.ok) return read.content;
-  if (read.problem === "missing") return null;
-  throw new Error(`refusing to read the OpenRig config: ${read.message}`);
-}

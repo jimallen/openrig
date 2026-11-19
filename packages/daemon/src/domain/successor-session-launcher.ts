@@ -13,7 +13,7 @@ import { ensureCodexSeatHome } from "./codex-seat-home.js";
 import type { CodexConfigWritePolicy } from "./codex-config-write-policy.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { launchFailureSuffix } from "./launch-failure-report.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
 import { getSeatCwdFault, handoverCwdRefusalMessage, type SeatCwdFault } from "./cwd-resolution.js";
 import { ensureGitWorktreeShim, withWorktreeShimPath, type ShimFiles } from "./git-worktree-shim.js";
@@ -116,7 +116,7 @@ export class SuccessorSessionLauncher {
   private newId: () => string;
   private runtimeAdapters: Record<string, RuntimeAdapter>;
   private readinessTimeoutMs: number | undefined;
-  private readinessSettings: Pick<SettingsStore, "resolveOne">;
+  private readinessSettings: SettingsReader;
   private sleep: (ms: number) => Promise<void>;
   private tmuxOptionDefaults: TmuxOptionDefaultsApplier | null;
   private codexConfigWritePolicy: CodexConfigWritePolicy | null;
@@ -140,7 +140,7 @@ export class SuccessorSessionLauncher {
       runtimeAdapters?: Record<string, RuntimeAdapter>;
       /** Explicit readiness timeout in ms; otherwise use the runtime setting. */
       readinessTimeoutMs?: number;
-      readinessSettings?: Pick<SettingsStore, "resolveOne">;
+      readinessSettings?: SettingsReader;
       /** Injectable sleep (tests). */
       sleep?: (ms: number) => Promise<void>;
       /**
@@ -174,7 +174,7 @@ export class SuccessorSessionLauncher {
     this.newId = opts.newId ?? ulid;
     this.runtimeAdapters = opts.runtimeAdapters ?? {};
     this.readinessTimeoutMs = opts.readinessTimeoutMs;
-    this.readinessSettings = opts.readinessSettings ?? new SettingsStore();
+    this.readinessSettings = opts.readinessSettings ?? DEFAULT_SETTINGS;
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.tmuxOptionDefaults = opts.tmuxOptionDefaults ?? null;
     this.codexConfigWritePolicy = opts.codexConfigWritePolicy ?? null;

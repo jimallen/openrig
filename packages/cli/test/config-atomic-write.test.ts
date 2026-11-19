@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ConfigStore } from "../src/config-store.js";
-import { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { SettingsStore as DomainSettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { DEFAULT_OPENRIG_HOME, NodeSettingsFile } from "../../daemon/src/adapters/node-settings-file.js";
+
+/** The daemon store over config.json at `file` (workspaces-6ul: the store takes its file through the SettingsFile port). */
+class SettingsStore extends DomainSettingsStore {
+  constructor(file: string) { super(new NodeSettingsFile(file), DEFAULT_OPENRIG_HOME); }
+}
 const failure = vi.hoisted(() => ({ active: false, ownership: false, renameCode: "", createCode: "", writeCode: "ENOSPC" }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();

@@ -39,6 +39,7 @@ import { shellQuote } from "../adapters/shell-quote.js";
 import { parseFrontmatter } from "./slices/slice-indexer.js";
 import { lastMeaningfulTransition } from "./queue-waiting.js";
 import { derivePickup } from "./queue-pickup.js";
+import type { SettingsReader } from "./user-settings/settings-store.js";
 import { resolveWorkNodeDirs } from "./current-work.js";
 import { resolveLegacyTopologyRigsRoot } from "./user-settings/settings-store.js";
 import { BUILD_INFO, type BuildInfo } from "../build-info.js";
@@ -48,6 +49,8 @@ export const INDETERMINATE = "INDETERMINATE" as const;
 export type Indeterminate = typeof INDETERMINATE;
 
 export interface ExecutionViewDeps {
+  /** The daemon's settings (the pickup stall threshold); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+  settings?: SettingsReader;
   db: Database.Database;
   /** The missions root (workspace.slices_root). Null => fs-derived sections floor
    *  to INDETERMINATE; the queue-derived sections still answer. */
@@ -812,7 +815,7 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
       lastHeartbeat: r.last_heartbeat,
       postClaimMotionCount: Number(r.post_claim_motion ?? 0),
       now: now(),
-    });
+    }, deps.settings);
     lanes.push({
       qitem_id: r.qitem_id,
       slice,
@@ -1114,7 +1117,7 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
         lastHeartbeat: r.last_heartbeat,
         postClaimMotionCount: Number(r.post_claim_motion ?? 0),
         now: now(),
-      });
+      }, deps.settings);
       const wake = deps.db
         .prepare(`SELECT wake_ref, phase FROM queue_transition_wakes WHERE qitem_id = ? AND phase = 'armed' LIMIT 1`)
         .get(r.qitem_id) as { wake_ref: string; phase: string } | undefined;

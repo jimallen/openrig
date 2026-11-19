@@ -557,12 +557,12 @@ describe("B6 — idle-gate auto-registration default-off / opt-in gate", () => {
   });
 
   it('store-to-enforcer: a validator-accepted whitespace-padded " all " opts the fleet in (the gate compares the same normalization the validator accepted)', async () => {
-    const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+    const { openSettingsStore } = await import("../src/adapters/node-settings-file.js");
     const home = mkdtempSync(join(tmpdir(), "b6-trim-"));
     const prevEnv = process.env.OPENRIG_POLICIES_IDLE_GATE_QITEM_AUTO_REGISTER;
     process.env.OPENRIG_POLICIES_IDLE_GATE_QITEM_AUTO_REGISTER = " all ";
     try {
-      const realStore = new SettingsStore(join(home, "config.yaml"));
+      const realStore = openSettingsStore(join(home, "config.yaml"));
       // The REAL store hands the padded value through as valid env config…
       expect(String(realStore.resolveOne("policies.idle_gate_qitem.auto_register").value)).toBe(" all ");
       // …and the enforcement gate must read it as the mode the validator accepted.

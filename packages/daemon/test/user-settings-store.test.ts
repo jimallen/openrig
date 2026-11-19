@@ -9,14 +9,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  SettingsStore,
-  SETTINGS_VALID_KEYS,
-  DEFAULT_CLAUDE_COMPACTION_EXTRA_INSTRUCTION_FILE_CONTENT,
-  defaultClaudeCompactionExtraInstructionFilePath,
-  ensureDefaultClaudeCompactionFiles,
-  parseNamedPairs,
-} from "../src/domain/user-settings/settings-store.js";
+import { SettingsStore, SETTINGS_VALID_KEYS, DEFAULT_CLAUDE_COMPACTION_EXTRA_INSTRUCTION_FILE_CONTENT, defaultClaudeCompactionExtraInstructionFilePath, parseNamedPairs } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore, ensureDefaultClaudeCompactionFiles } from "../src/adapters/node-settings-file.js";
 
 const DEFAULT_PRE_COMPACT_INSTRUCTION_FRAGMENT = "Read the claude-compaction-restore skill";
 const DEFAULT_RESTORE_INSTRUCTION_FRAGMENT = "Read the claude-compaction-restore skill";
@@ -195,7 +189,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("resolves context.root and refuses the removed key, file field, and env", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("context.root")).toMatchObject({
       value: expect.stringMatching(/context$/),
       source: "default",
@@ -214,12 +208,12 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("defaults the advisor session to the kernel's advisor seat", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
   });
 
   it("defaults output.whoami_peers to 8 and accepts only an integer >= 1 (slice 15 P5)", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("output.whoami_peers")).toMatchObject({ value: 8, source: "default" });
     store.set("output.whoami_peers", "12");
     expect(store.resolveOne("output.whoami_peers")).toMatchObject({ value: 12, source: "file" });
@@ -229,7 +223,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("resolves mutable 95/99 context-pressure thresholds and rejects invalid order", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveContextPressurePolicy()).toEqual({ warningPercent: 95, criticalPercent: 99 });
     expect(store.resolveOne("health.context_pressure.warning_percent")).toMatchObject({
       value: 95,
@@ -260,7 +254,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("resolves the System World selector through default, file, and env provenance", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("context.system_world")).toMatchObject({ value: "default", source: "default" });
     store.set("context.system_world", "operator/system-world.yaml");
     expect(store.resolveOne("context.system_world")).toMatchObject({ value: "operator/system-world.yaml", source: "file" });
@@ -269,7 +263,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("W2c idle-gate-qitem cadence defaults to scan=60 and active-wake=900", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(() => store.resolveOne("policies.idle_gate_qitem.scan_interval_seconds"))
       .not.toThrow();
     expect(() => store.resolveOne("policies.idle_gate_qitem.active_wake_interval_seconds"))
@@ -281,7 +275,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("resolves the launch readiness window from default, file, and env", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("runtime.readiness_timeout_seconds")).toMatchObject({ value: 30, source: "default" });
     store.set("runtime.readiness_timeout_seconds", "45");
     expect(store.resolveOne("runtime.readiness_timeout_seconds")).toMatchObject({ value: 45, source: "file" });
@@ -293,7 +287,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("falls back from an invalid readiness env value to the file value, then the default", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       process.env["OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS"] = "0";
@@ -307,7 +301,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("queue integer settings reject partial and fractional strings", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     for (const key of [
       "queue.pickup_stall_threshold_minutes",
       "queue.stuck_sweep_interval_seconds",
@@ -321,7 +315,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("W2c idle-gate-qitem cadence resolves env over file", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(() => store.set("policies.idle_gate_qitem.scan_interval_seconds", "120")).not.toThrow();
     expect(() => store.set("policies.idle_gate_qitem.active_wake_interval_seconds", "1800")).not.toThrow();
     expect(store.resolveOne("policies.idle_gate_qitem.scan_interval_seconds"))
@@ -338,7 +332,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("W2c idle-gate-qitem cadence rejects zero, negative, fractional, and partial numbers", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     for (const key of [
       "policies.idle_gate_qitem.scan_interval_seconds",
       "policies.idle_gate_qitem.active_wake_interval_seconds",
@@ -351,7 +345,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("resolveAllWithSource returns every key with source + default", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     const all = store.resolveAllWithSource();
     for (const key of SETTINGS_VALID_KEYS) {
       expect(all[key]).toBeDefined();
@@ -360,7 +354,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("default onboarding pack is on and resolves env over file", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("onboarding.default_pack.enabled"))
       .toMatchObject({ value: true, source: "default", defaultValue: true });
 
@@ -374,7 +368,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("env > file > default for daemon.port", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     // No file → default
     expect(store.resolveOne("daemon.port").source).toBe("default");
     expect(store.resolveOne("daemon.port").value).toBe(7433);
@@ -402,7 +396,7 @@ describe("SettingsStore (User Settings v0)", () => {
   // same parseInt the boot path runs on OPENRIG_PORT), never against a
   // stricter input format than today's.
   it("daemon.port refuses ports that cannot be bound; 0 and 65535 stay legal", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     for (const raw of ["-1", "65536", "99999"]) {
       expect(() => store.set("daemon.port", raw), `daemon.port must reject ${raw}`)
         .toThrow(/integer in \[0, 65535\]/);
@@ -414,7 +408,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("daemon.port keeps resolving every input form that resolves today", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     for (const [raw, expected] of [
       ["7433abc", 7433],
       ["7433.5", 7433],
@@ -431,7 +425,7 @@ describe("SettingsStore (User Settings v0)", () => {
     writeFileSync(configPath, JSON.stringify({ daemon: { port: 99999 } }));
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      const store = new SettingsStore(configPath);
+      const store = openSettingsStore(configPath);
       expect(store.resolveOne("daemon.port").value).toBe(7433);
       expect(store.resolveOne("daemon.port").source).toBe("default");
       const warns = stderrSpy.mock.calls.map((c) => String(c[0]));
@@ -443,7 +437,7 @@ describe("SettingsStore (User Settings v0)", () => {
 
   it("a quoted in-range port in config.json keeps its port, and the CLI target and daemon bind agree", () => {
     writeFileSync(configPath, JSON.stringify({ daemon: { port: "7434" } }));
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     // Used as-is, exactly as before this constraint existed: the CLI's
     // target stays "7434" and startServer binds parseInt of the same value.
     expect(store.resolveOne("daemon.port").value).toBe("7434");
@@ -452,7 +446,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("workspace.root cascades into per-subdir defaults", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     store.set("workspace.root", "/custom/ws");
     store.set("skills.root", join(tmpDir, "skills"));
     const cfg = store.resolveConfig();
@@ -468,21 +462,21 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("recovery.auto_drive_provider_prompts defaults false and resolves into daemon config", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("recovery.auto_drive_provider_prompts").value).toBe(false);
     store.set("recovery.auto_drive_provider_prompts", "true");
     expect(store.resolveConfig().recoveryAutoDriveProviderPrompts).toBe(true);
   });
 
   it("recovery.provider_auth_env_allowlist defaults empty and resolves into daemon config", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveOne("recovery.provider_auth_env_allowlist").value).toBe("");
     store.set("recovery.provider_auth_env_allowlist", "ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN");
     expect(store.resolveConfig().recoveryProviderAuthEnvAllowlistRaw).toBe("ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN");
   });
 
   it("per-subdir override beats the workspace.root cascade", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     store.set("workspace.root", "/ws");
     store.set("workspace.slices_root", "/custom/slices");
     const cfg = store.resolveConfig();
@@ -493,7 +487,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("workspace project paths default from workspace.root and support env overrides", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     store.set("workspace.root", "/custom/ws");
     expect(store.resolveConfig().workspaceProjectsRoot).toBe("/custom/ws/projects");
     expect(store.resolveConfig().workspaceCatalogPath).toBe("/custom/ws/workspace.yaml");
@@ -522,7 +516,7 @@ describe("SettingsStore (User Settings v0)", () => {
         steeringPath: "/ws/steering/STEERING.md",
       },
     }));
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     const slices = store.resolveOne("workspace.slices_root");
     const steering = store.resolveOne("workspace.steering_path");
     expect(slices).toMatchObject({ value: "/ws/missions", source: "default" });
@@ -530,7 +524,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("UEP env-var graduation: OPENRIG_FILES_ALLOWLIST resolves files.allowlist", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     process.env["OPENRIG_FILES_ALLOWLIST"] = "ws:/Users/me";
     try {
       expect(store.resolveOne("files.allowlist").value).toBe("ws:/Users/me");
@@ -541,7 +535,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("set + reset round-trips through the file format", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     store.set("workspace.slices_root", "/custom/slices");
     expect(existsSync(configPath)).toBe(true);
     expect(store.resolveOne("workspace.slices_root").value).toBe("/custom/slices");
@@ -554,18 +548,18 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("set rejects unknown keys", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(() => store.set("workspace.bogus", "x")).toThrow(/Unknown config key/);
   });
 
   it("malformed JSON throws with reset hint", () => {
     writeFileSync(configPath, "{not json");
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(() => store.resolveAllWithSource()).toThrow(/malformed/i);
   });
 
   it("file format matches CLI ConfigStore: nested keys persist as JSON", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     store.set("workspace.slices_root", "/x");
     store.set("daemon.port", "1234");
     const raw = JSON.parse(require("node:fs").readFileSync(configPath, "utf-8"));
@@ -575,7 +569,7 @@ describe("SettingsStore (User Settings v0)", () => {
 
   // Slice 27 — Claude auto-compaction policy resolution.
   it("HG-5 + HG-10: resolveClaudeCompactionPolicy returns defaults when no file/env present (opt-in default-off)", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     const policy = store.resolveClaudeCompactionPolicy();
     expect(policy.enabled).toBe(false);
     expect(policy.thresholdPercent).toBe(80);
@@ -588,7 +582,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("HG-10: resolveClaudeCompactionPolicy picks up direct config.json edits without daemon restart (single resolve call rereads file)", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(store.resolveClaudeCompactionPolicy().enabled).toBe(false);
 
     writeFileSync(
@@ -633,7 +627,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("HG-1: set/get round-trip for each policy key persists to disk and reads back", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
 
     store.set("policies.claude_compaction.enabled", "true");
     store.set("policies.claude_compaction.threshold_percent", "60");
@@ -662,7 +656,7 @@ describe("SettingsStore (User Settings v0)", () => {
   });
 
   it("HG-1: invalid threshold rejected by coerceValue (non-numeric raises)", () => {
-    const store = new SettingsStore(configPath);
+    const store = openSettingsStore(configPath);
     expect(() => store.set("policies.claude_compaction.threshold_percent", "not-a-number")).toThrow(/expected a number/);
   });
 
@@ -682,7 +676,7 @@ describe("SettingsStore (User Settings v0)", () => {
         process.env["OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT"] = raw;
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
         try {
-          const store = new SettingsStore(configPath);
+          const store = openSettingsStore(configPath);
           const resolved = store.resolveOne("policies.claude_compaction.threshold_percent");
           // Default value (80), source falls through to "default"
           expect(resolved.value).toBe(80);
@@ -702,7 +696,7 @@ describe("SettingsStore (User Settings v0)", () => {
       process.env["OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT"] = "80abc";
       let stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       try {
-        const a = new SettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
+        const a = openSettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
         expect(a.value).toBe(80);
         expect(a.source).toBe("default");
         const warnCount = stderrSpy.mock.calls
@@ -720,7 +714,7 @@ describe("SettingsStore (User Settings v0)", () => {
       process.env["OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT"] = "80";
       stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       try {
-        const b = new SettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
+        const b = openSettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
         expect(b.value).toBe(80);
         expect(b.source).toBe("env");
         const warnCount = stderrSpy.mock.calls
@@ -749,7 +743,7 @@ describe("SettingsStore (User Settings v0)", () => {
         }));
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
         try {
-          const resolved = new SettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
+          const resolved = openSettingsStore(configPath).resolveOne("policies.claude_compaction.threshold_percent");
           expect(resolved.value).toBe(80);
           expect(resolved.source).toBe("default");
           const calls = stderrSpy.mock.calls.map((c) => String(c[0]));
@@ -785,7 +779,7 @@ describe("SettingsStore (User Settings v0)", () => {
 
     for (const value of cases.accept) {
       it(`accepts ${JSON.stringify(value)}`, () => {
-        const store = new SettingsStore(configPath);
+        const store = openSettingsStore(configPath);
         expect(() => store.set("policies.claude_compaction.threshold_percent", value)).not.toThrow();
         expect(store.resolveOne("policies.claude_compaction.threshold_percent").value).toBe(Number(value));
       });
@@ -793,7 +787,7 @@ describe("SettingsStore (User Settings v0)", () => {
 
     for (const { raw, reason } of cases.reject) {
       it(`rejects ${JSON.stringify(raw)}`, () => {
-        const store = new SettingsStore(configPath);
+        const store = openSettingsStore(configPath);
         expect(() => store.set("policies.claude_compaction.threshold_percent", raw)).toThrow(reason);
       });
     }

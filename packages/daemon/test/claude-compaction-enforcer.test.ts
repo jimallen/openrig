@@ -957,7 +957,7 @@ describe("ClaudeCompactionEnforcer", () => {
   // bypass is closed end-to-end (resolve → enforcer → send-decision).
   describe("BLOCKING-FIX-2 integration: env-source bypass cannot poison enforcer", () => {
     it("env=80abc with policy enabled at threshold>= the seat percentage → does NOT trigger /compact (env rejected; falls to default 80; seat at 79% below threshold)", async () => {
-      const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+      const { openSettingsStore } = await import("../src/adapters/node-settings-file.js");
       const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
       const { join } = await import("node:path");
       const { tmpdir } = await import("node:os");
@@ -973,7 +973,7 @@ describe("ClaudeCompactionEnforcer", () => {
       writeFileSync(configPath, JSON.stringify({
         policies: { claudeCompaction: { enabled: true, thresholdPercent: 80 } },
       }));
-      const settings = new SettingsStore(configPath);
+      const settings = openSettingsStore(configPath);
 
       process.env["OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT"] = "0";
       const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -999,7 +999,7 @@ describe("ClaudeCompactionEnforcer", () => {
     });
 
     it("env=80abc + file at threshold 80 + seat at 99% → triggers (env rejected; file 80 wins via fallback; 99 >= 80)", async () => {
-      const { SettingsStore } = await import("../src/domain/user-settings/settings-store.js");
+      const { openSettingsStore } = await import("../src/adapters/node-settings-file.js");
       const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
       const { join } = await import("node:path");
       const { tmpdir } = await import("node:os");
@@ -1009,7 +1009,7 @@ describe("ClaudeCompactionEnforcer", () => {
       writeFileSync(configPath, JSON.stringify({
         policies: { claudeCompaction: { enabled: true, thresholdPercent: 80 } },
       }));
-      const settings = new SettingsStore(configPath);
+      const settings = openSettingsStore(configPath);
 
       process.env["OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT"] = "80abc";
       const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);

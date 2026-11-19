@@ -1,4 +1,4 @@
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 
 const DEFAULT_READINESS_TIMEOUT_SECONDS = 30;
 /** The readiness window when nothing sets one (`runtime.readiness_timeout_seconds`, an integer in [1, 600], default 30). */
@@ -10,7 +10,7 @@ export const DEFAULT_READINESS_TIMEOUT_MS = DEFAULT_READINESS_TIMEOUT_SECONDS * 
  * the daemon runs) costs a warning and the 30-second default, never a launch. */
 export function resolveReadinessTimeoutMs(
   explicitMs: number | undefined,
-  settings: Pick<SettingsStore, "resolveOne"> = new SettingsStore(),
+  settings: SettingsReader = DEFAULT_SETTINGS,
 ): number {
   if (explicitMs !== undefined) return explicitMs;
   try {

@@ -9,6 +9,7 @@ import { runWakeLadderTick, queueRecoveryOwnsWake, WAKE_SUSPEND_OVERRIDE_ENV } f
 import { lastMeaningfulTransition } from "../src/domain/queue-waiting.js";
 import { recoveryTag } from "../src/domain/queue-recovery.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 describe("waiting face names the next action the existing ladder can actually take", () => {
   let db: Database.Database, queue: QueueRepository, sends: string[];
@@ -20,7 +21,7 @@ describe("waiting face names the next action the existing ladder can actually ta
     vi.stubEnv("OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES", "30");
     db = new Database(":memory:"); migrate(db, ALL_MIGRATIONS);
     db.prepare("INSERT INTO rigs (id,name) VALUES ('r','rig')").run(); sends = [];
-    queue = new QueueRepository(db, new EventBus(db), { validateRig: () => true, transport: { send: async target => {
+    queue = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(), validateRig: () => true, transport: { send: async target => {
       sends.push(target); return target === "healthy@rig" ? { ok: true, verified: true } : { ok: false, error: "synthetic unavailable" };
     } } });
     queue.attachOutbox(new OutboxHandler(db));
@@ -35,7 +36,7 @@ describe("waiting face names the next action the existing ladder can actually ta
     return id;
   }
   const view = (id: string) => queue["getByIdOrThrow"](id).waiting!;
-  const tick = () => runWakeLadderTick({ db, queueRepo: queue, now: new Date(), resolveOrchestrator: () => null, log: () => {} });
+  const tick = () => runWakeLadderTick({ settings: openSettingsStore(), db, queueRepo: queue, now: new Date(), resolveOrchestrator: () => null, log: () => {} });
 
   it("separates failed retry and verified unclaimed grace, and advances only after the actual attempt", async () => {
     const good = await handoff("healthy@rig"), failed = await handoff();
@@ -128,7 +129,7 @@ describe("waiting face names the next action the existing ladder can actually ta
   it("counts a typing-guard refusal after a closed recovery as fresh evidence, reopening the retry path (#344)", async () => {
     // Every wake this episode is refused by the typing guard: no pane input is
     // written, and the nudge records the retained vocabulary.
-    queue = new QueueRepository(db, new EventBus(db), {
+    queue = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(),
       validateRig: () => true,
       transport: { send: async () => ({ outcome: "retained" }) },
     });
@@ -150,7 +151,7 @@ describe("waiting face names the next action the existing ladder can actually ta
   });
 
   it("keeps an unclaimed baton whose wake was guard-refused inside the retry ladder (#344)", async () => {
-    queue = new QueueRepository(db, new EventBus(db), {
+    queue = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(),
       validateRig: () => true,
       transport: { send: async () => ({ outcome: "retained" }) },
     });
@@ -173,7 +174,7 @@ describe("waiting face names the next action the existing ladder can actually ta
     // whose last wake was retained must stay not-owned: the ladder's claimed-row
     // retry readback selects `failed:%` only, so owning it here would let the
     // parked-owner watchdog skip a row that nothing retries.
-    queue = new QueueRepository(db, new EventBus(db), {
+    queue = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(),
       validateRig: () => true,
       transport: { send: async () => ({ outcome: "retained" }) },
     });

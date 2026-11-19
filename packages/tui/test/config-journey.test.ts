@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { configRoutes } from "../../daemon/src/routes/config.js";
 import { gatewayRoutes } from "../../daemon/src/routes/gateway.js";
 import { SettingsStore, SETTINGS_VALID_KEYS } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../daemon/src/adapters/node-settings-file.js";
 import { DEFAULT_CONFIG, saveConfig, configPathFor } from "../../daemon/src/domain/gateway/slack/config.js";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
@@ -21,7 +22,7 @@ const secret = "fixture-private-config-credential";
 const longPath = "/fixture/" + "a-long-work-folder/".repeat(16) + "exact-tail";
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "s06-config-journey-"));
-  settings = new SettingsStore(join(home, "config.json"));
+  settings = openSettingsStore(join(home, "config.json"));
   settings.set("host.name", "config-fixture");
   settings.set("workspace.root", longPath);
   settings.set("queue.wake_retry_interval_seconds", "300");

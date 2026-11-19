@@ -9,7 +9,7 @@ import { routePlugins, type PluginsRouterFsOps, type RoutePluginsResult, type Pl
 import { routeWorkflowSpecs, type WorkflowSpecsRouterFsOps, type RouteWorkflowSpecsResult } from "./bundle-workflow-specs-router.js";
 import { routeContextPacks, type ContextPacksRouterFsOps, type RouteContextPacksResult } from "./bundle-context-packs-router.js";
 import { routeAgentImages, type AgentImagesRouterFsOps, type RouteAgentImagesResult } from "./bundle-agent-images-router.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { parse as parseYaml } from "yaml";
 import { registerBundleProject, type ProjectRegistrationResult } from "./workspace/project-registration.js";
 
@@ -39,6 +39,9 @@ export interface BundleContentRouting {
 export interface BundleContentRoutingOptions {
   /** Called after context packs were routed, so the live library can rescan them. Returns the scan's per-pack errors. */
   onContextPacksRouted?: () => { errors?: Array<{ source: string; error: string }> } | void;
+  /** The daemon's settings, for the workspace and context roots the contents land in (workspaces-6ul). DEFAULT_SETTINGS has no
+   *  home, so without it each path-routed kind is recorded as a failure, never routed to an invented path. */
+  settings?: SettingsReader;
 }
 
 /** The message of anything thrown or rejected, including values that are not Errors (null, undefined, strings). */
@@ -82,6 +85,7 @@ export async function routeBundleContents(
   opts: BundleContentRoutingOptions = {},
 ): Promise<BundleContentRouting> {
   const routing: BundleContentRouting = {};
+  const settings = opts.settings ?? DEFAULT_SETTINGS;
   const failures: Array<{ kind: BundleContentKind; error: string }> = [];
   const attempt = <T>(kind: BundleContentKind, run: () => T): T | undefined => {
     try {
@@ -133,7 +137,7 @@ export async function routeBundleContents(
       const declaredWorkflowSpecs = stringEntries(manifest["workflow_specs"]);
       if (declaredWorkflowSpecs.length > 0) {
         routing.workflowSpecsRouting = attempt("workflowSpecs", () => {
-          const workspaceSpecsRoot = new SettingsStore().resolveConfig().workspaceSpecsRoot;
+          const workspaceSpecsRoot = settings.resolveOne("workspace.specs_root").value as string;
           if (!workspaceSpecsRoot) throw new Error("workspace specs root is not configured");
           return routeWorkflowSpecs(
             { bundleRoot, declaredWorkflowSpecs, targetWorkflowSpecsDir: nodePath.join(workspaceSpecsRoot, "workflows") },
@@ -151,7 +155,7 @@ export async function routeBundleContents(
           {
             bundleRoot,
             declaredContextPacks,
-            targetContextPacksDir: new SettingsStore().resolveOne("context.root").value as string,
+            targetContextPacksDir: settings.resolveOne("context.root").value as string,
           },
           contextPacksRouterFsOps(),
         ));
@@ -180,7 +184,6 @@ export async function routeBundleContents(
           if (typeof id !== "string" || typeof projectPath !== "string") throw new Error("bundle project entry needs an id and a path");
           const rigSpec = parseYaml(fs.readFileSync(nodePath.join(bundleRoot, String(manifest!["rig_spec"])), "utf-8")) as { name?: unknown };
           if (typeof rigSpec?.name !== "string") throw new Error("bundle rig spec has no name");
-          const settings = new SettingsStore();
           const result = registerBundleProject({
             bundleProjectDir: nodePath.join(bundleRoot, projectPath),
             projectId: id,

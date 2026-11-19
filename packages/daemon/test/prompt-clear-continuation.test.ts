@@ -11,6 +11,7 @@ import { runWakeLadderTick, queueRecoveryOwnsWake, classifyPromptAfterRefusal, r
 import { LADDER_ATTEMPT_PREFIX, LADDER_EXHAUSTED_PREFIX } from "../src/domain/queue-stuck-sweep.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { CLAUDE_ACTIVITY_RUNG_INVENTORY, type ActivityEvidence } from "../src/domain/activity-taxonomy.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 const seat = "worker@fixture";
 const epoch = Date.parse("2026-01-01T00:00:00.000Z");
@@ -35,7 +36,7 @@ describe("original wake continuation after prompt clearing", () => {
     vi.stubEnv("OPENRIG_WAKE_SUSPEND", "");
     db = new Database(":memory:");
     migrate(db, ALL_MIGRATIONS);
-    repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+    repo = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(), validateRig: () => true });
   });
   afterEach(() => { db.close(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 
@@ -95,7 +96,7 @@ describe("original wake continuation after prompt clearing", () => {
     }
     const tick = async (second: number) => {
       vi.setSystemTime(at(second));
-      const result = await runWakeLadderTick({ db, queueRepo: repo, resolveOrchestrator: () => null,
+      const result = await runWakeLadderTick({ settings: openSettingsStore(), db, queueRepo: repo, resolveOrchestrator: () => null,
         readPromptState: (_dest, refusedAt) => classifyPromptAfterRefusal(observed, refusedAt), now: at(second),
         deliveryEngine: { dispatchEscalation: async () => ({ decision: "undeliverable:no-registered-human", resolved: false }) },
         attemptWake: async (qitemId, target) => {
@@ -134,7 +135,7 @@ describe("original wake continuation after prompt clearing", () => {
     for (const second of [20, 59, 60, 61, 120, 121, 180]) {
       await f.tick(second);
       await f.evaluate(second);
-      const backstop = readWakeLadderBackstop(db, f.id);
+      const backstop = readWakeLadderBackstop(db, f.id, openSettingsStore());
       if (mode === "unknown" || mode === "manual-close-then-clear") {
         expect(backstop).toMatchObject({ mechanism: mode === "unknown" ? "queue-recovery:delegated" : "queue-recovery:resolved", dueAt: null });
         expect(queueRecoveryOwnsWake(db, repo.getById(f.id))).toBe(true);
@@ -172,7 +173,7 @@ describe("original wake continuation after prompt clearing", () => {
     await f.tick(120);
     expect(f.wakes).toEqual([]);
     expect(queueRecoveryOwnsWake(db, repo.getById(f.id))).toBe(true);
-    expect(readWakeLadderBackstop(db, f.id)?.mechanism).toBe(variant === "still-open" ? "queue-recovery:delegated" : "queue-recovery:resolved");
+    expect(readWakeLadderBackstop(db, f.id, openSettingsStore())?.mechanism).toBe(variant === "still-open" ? "queue-recovery:delegated" : "queue-recovery:resolved");
   });
 
   // OF-117 (review-u06 unpinned guards): readWakeLadderBackstop reads the recovery disposition's tags at two places (the
@@ -187,22 +188,22 @@ describe("original wake continuation after prompt clearing", () => {
 
     it("prompt-alert guard: control, the intact disposition says the recovery owns the continuation", async () => {
       const f = await fixture("pending-failed");
-      expect(readWakeLadderBackstop(db, f.id)?.mechanism).toBe("queue-recovery:delegated");
+      expect(readWakeLadderBackstop(db, f.id, openSettingsStore())?.mechanism).toBe("queue-recovery:delegated");
     });
 
     it("prompt-alert guard: damaged tags do not hide the alert tag by throwing; the ladder's own retry is shown", async () => {
       const f = await fixture("pending-failed");
       damageAlertTags(f);
-      expect(() => readWakeLadderBackstop(db, f.id)).not.toThrow();
-      expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ owner: seat, mechanism: "queue-wake-ladder:retry", intervalSeconds: 60 });
+      expect(() => readWakeLadderBackstop(db, f.id, openSettingsStore())).not.toThrow();
+      expect(readWakeLadderBackstop(db, f.id, openSettingsStore())).toMatchObject({ owner: seat, mechanism: "queue-wake-ladder:retry", intervalSeconds: 60 });
     });
 
     it("wake-escalation guard: with the retries spent, damaged tags read as 'not escalated' and the recovery is shown as owning the wake", async () => {
       const f = await fixture("pending-failed");
       for (let n = 1; n <= 3; n++) repo.transitionLog.append({ qitemId: f.id, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
       damageAlertTags(f);
-      expect(() => readWakeLadderBackstop(db, f.id)).not.toThrow();
-      expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ mechanism: "queue-recovery:delegated", dueAt: null });
+      expect(() => readWakeLadderBackstop(db, f.id, openSettingsStore())).not.toThrow();
+      expect(readWakeLadderBackstop(db, f.id, openSettingsStore())).toMatchObject({ mechanism: "queue-recovery:delegated", dueAt: null });
     });
   });
 
@@ -211,7 +212,7 @@ describe("original wake continuation after prompt clearing", () => {
     vi.setSystemTime(at(15));
     for (let n = 1; n <= 2; n++) repo.transitionLog.append({ qitemId: f.id, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
     f.observe("clear", 20); await f.tick(20);
-    expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ mechanism: "queue-wake-ladder:retry", dueAt: at(75).toISOString() });
+    expect(readWakeLadderBackstop(db, f.id, openSettingsStore())).toMatchObject({ mechanism: "queue-wake-ladder:retry", dueAt: at(75).toISOString() });
     await f.tick(74); expect(f.wakes).toEqual([]);
     await f.tick(75); await f.tick(135); await f.tick(195);
     expect(f.wakes).toEqual([{ via: "ladder", qitemId: f.id, second: 75 }]);
@@ -223,7 +224,7 @@ describe("original wake continuation after prompt clearing", () => {
     vi.setSystemTime(at(15));
     for (let n = 1; n <= 3; n++) repo.transitionLog.append({ qitemId: sibling.qitemId, state: "pending", actorSession: "wake-ladder@system", transitionNote: `${LADDER_ATTEMPT_PREFIX} ${n}/3 outcome=failed:fixture` });
     f.observe("clear", 20); await f.tick(20);
-    expect(readWakeLadderBackstop(db, f.id)).toMatchObject({ mechanism: "queue-wake-ladder:retry", dueAt: at(75.001).toISOString() });
+    expect(readWakeLadderBackstop(db, f.id, openSettingsStore())).toMatchObject({ mechanism: "queue-wake-ladder:retry", dueAt: at(75.001).toISOString() });
     await f.tick(75); expect(f.wakes).toEqual([]);
     await f.tick(75.001); expect(f.wakes).toEqual([{ via: "ladder", qitemId: f.id, second: 75.001 }]);
   });
@@ -235,7 +236,7 @@ describe("original wake continuation after prompt clearing", () => {
     f.observe("clear", 20);
     for (const second of [20, 60, 120, 180]) { await f.tick(second); await f.evaluate(second); }
     expect(f.wakes).toEqual([]);
-    expect(readWakeLadderBackstop(db, f.id)?.mechanism).toContain("queue-wake-ladder:exhausted");
+    expect(readWakeLadderBackstop(db, f.id, openSettingsStore())?.mechanism).toContain("queue-wake-ladder:exhausted");
     expect(repo.listTransitions(f.id).filter(t => t.transitionNote?.startsWith(LADDER_EXHAUSTED_PREFIX))).toHaveLength(1);
   });
 

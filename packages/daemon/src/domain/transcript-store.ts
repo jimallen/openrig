@@ -4,6 +4,7 @@ import { join, dirname, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { getCompatibleOpenRigPath } from "../openrig-compat.js";
 import { getLastCaptureAt, DEFAULT_TRANSCRIPT_STALE_AFTER_MS } from "./transcript-rotation.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 
 export interface TranscriptStoreOpts {
   /** The file effects (workspaces-o9o.69): src/adapters/node-transcript-files.ts in the daemon. */
@@ -11,6 +12,8 @@ export interface TranscriptStoreOpts {
   transcriptsRoot?: string;
   enabled?: boolean;
   staleAfterMs?: number;
+  /** The daemon's settings (transcript lines and poll interval for rotation); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+  settings?: SettingsReader;
 }
 
 export type TranscriptIngestState = "live" | "degraded" | "unavailable";
@@ -207,12 +210,14 @@ export class TranscriptStore {
   private readonly staleAfterMs: number;
   /** The port this store reads and writes through; transcript rotation writes through the same one. */
   readonly files: TranscriptFiles;
+  readonly settings: SettingsReader;
 
   constructor(opts: TranscriptStoreOpts) {
     this.files = requireTranscriptFiles(opts?.files, "TranscriptStore");
     this.root = opts.transcriptsRoot ?? DEFAULT_ROOT;
     this._enabled = opts.enabled ?? true;
     this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_TRANSCRIPT_STALE_AFTER_MS;
+    this.settings = opts.settings ?? DEFAULT_SETTINGS;
   }
 
   get enabled(): boolean {

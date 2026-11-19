@@ -2,7 +2,7 @@ import { RigRepository } from "./rig-repository.js";
 import { makeRunningSessionCounter, lifecycleHeldOf, goneGenerationRefusal, setOff } from "./running-name-guard.js";
 import { shellWord } from "./active-occupant.js";
 import { applyProjectRig, prepareProjectRigWorkspaces, PROJECT_RIG_WORKSPACES, flatSpecProjectRigError } from "./project-rig.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import nodePath from "node:path";
 import type Database from "better-sqlite3";
@@ -99,6 +99,8 @@ interface BootstrapOrchestratorDeps {
   rigRepo?: import("./rig-repository.js").RigRepository;
   /** Routes a bundle's declared contents; startup wires it to rescan the live context-pack library. */
   routeBundleContents?: (bundlePath: string) => Promise<BundleContentRouting>;
+  /** The daemon's settings (launch.non_interruptive); DEFAULT_SETTINGS when absent (workspaces-6ul). */
+  settings?: SettingsReader;
 }
 
 /** Generates a deterministic action key for plan->apply identity */
@@ -139,7 +141,7 @@ export class BootstrapOrchestrator {
   /** Route a bundle's declared skills, plugins, workflow specs, context packs and agent images. Never throws. */
   async routeBundleContents(bundlePath: string): Promise<BundleContentRouting> {
     try {
-      return await (this.deps.routeBundleContents ? this.deps.routeBundleContents(bundlePath) : routeBundleContents(bundlePath));
+      return await (this.deps.routeBundleContents ? this.deps.routeBundleContents(bundlePath) : routeBundleContents(bundlePath, { settings: this.deps.settings }));
     } catch (err) {
       return { routingFailures: [{ kind: "bundle", error: thrownMessage(err) }] };
     }
@@ -663,7 +665,7 @@ export class BootstrapOrchestrator {
       return { runId: run.id, status: "failed", stages, errors, warnings };
     }
 
-    const nonInterruptive = opts.nonInterruptive ?? (new SettingsStore().resolveOne("launch.non_interruptive").value === true);
+    const nonInterruptive = opts.nonInterruptive ?? ((this.deps.settings ?? DEFAULT_SETTINGS).resolveOne("launch.non_interruptive").value === true);
     const instantiateOutcome = await this.deps.rigInstantiator.instantiate(spec, { nonInterruptive });
     if ((instantiateOutcome.ok || "rigId" in instantiateOutcome) && (nonInterruptive || opts.nonInterruptive === false)) warnings.push(nonInterruptiveSummary(nonInterruptive));
 
@@ -872,7 +874,7 @@ export class BootstrapOrchestrator {
       const raw = RigSpecCodec.parse(rigSpecYaml) as Record<string, unknown> | null;
       if (typeof raw?.["non_interruptive"] === "boolean") declaredNonInterruptive = raw["non_interruptive"];
     } catch { /* The instantiator returns the existing structured validation failure. */ }
-    const nonInterruptive = opts.nonInterruptive ?? declaredNonInterruptive ?? (new SettingsStore().resolveOne("launch.non_interruptive").value === true);
+    const nonInterruptive = opts.nonInterruptive ?? declaredNonInterruptive ?? ((this.deps.settings ?? DEFAULT_SETTINGS).resolveOne("launch.non_interruptive").value === true);
     // `--on-existing fresh` is the operator's explicit choice to replace a rig whose seats are all gone.
     const outcome = await podInstantiator.instantiate(rigSpecYaml, rigRoot, { nonInterruptive, cwdOverride: opts.cwdOverride, prelaunchHook, installRoot, specSourcePath, ...(opts.onExisting === "fresh" ? { replaceGoneGeneration: true } : {}) });
     if ((outcome.ok || "rigId" in outcome) && (nonInterruptive || opts.nonInterruptive === false)) warnings.push(nonInterruptiveSummary(nonInterruptive));

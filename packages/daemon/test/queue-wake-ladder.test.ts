@@ -23,7 +23,7 @@ import { OutboxHandler } from "../src/domain/outbox-handler.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { USAGE_LIMIT_BLOCKER_TAG } from "../src/domain/queue-wake-repository.js";
 import { ViewProjector } from "../src/domain/view-projector.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import nodePath from "node:path";
 import { ProviderServiceImpl } from "../src/domain/provider/provider-service-impl.js";
 import { CodexUsageWindows } from "../src/domain/provider/codex-usage-windows.js";
@@ -538,7 +538,7 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
   it("HUMAN RUNG SETTING: defaults to always; explicit-only resolves from the env; other values are refused", async () => {
     const mod = await ladderMod();
     const missingConfig = `/tmp/openrig-811-missing-${process.pid}-${Date.now()}.json`;
-    const store = new SettingsStore(missingConfig);
+    const store = openSettingsStore(missingConfig);
     expect(store.resolveOne("queue.wake_human_rung" as never)).toMatchObject({ value: "always", source: "default" });
     expect(mod.DEFAULT_WAKE_HUMAN_RUNG).toBe("always");
     process.env.OPENRIG_QUEUE_WAKE_HUMAN_RUNG = "explicit-only";
@@ -1030,7 +1030,7 @@ describe("S01 wake-or-escalate — retry ladder, named rungs, derived suspension
     expect(mod.drawUsageLimitJitterSeconds(() => 0)).toBe(30);
     expect(mod.drawUsageLimitJitterSeconds(() => 0.999_999)).toBe(90);
     const missingConfig = `/tmp/openrig-s01-missing-${process.pid}-${Date.now()}.json`;
-    const store = new SettingsStore(missingConfig);
+    const store = openSettingsStore(missingConfig);
     expect(store.resolveOne("queue.wake_retry_interval_seconds" as never)).toMatchObject({ value: 300, source: "default" });
     expect(store.resolveOne("queue.wake_retry_cap" as never)).toMatchObject({ value: 3, source: "default" });
     expect(store.resolveOne("queue.wake_unconfirmed_window_minutes" as never)).toMatchObject({ value: 30, source: "default" });

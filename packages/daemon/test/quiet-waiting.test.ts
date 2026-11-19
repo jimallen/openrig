@@ -18,6 +18,7 @@ import { runStuckSweep } from "../src/domain/queue-stuck-sweep.js";
 import { queueRecoveryOwnsWake, runWakeLadderTick } from "../src/domain/queue-wake-ladder.js";
 import { makeParkedOwnerConsumerPolicy } from "../src/domain/policies/parked-owner-consumer.js";
 import { recoveryTag } from "../src/domain/queue-recovery.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 describe("quiet waits and bounded recovery on existing domain seams", () => {
   let db: Database.Database, bus: EventBus, queue: QueueRepository, jobs: WatchdogJobsRepository;
@@ -34,7 +35,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     db.prepare("INSERT INTO rigs (id,name) VALUES ('r','rig')").run();
     sends = []; worker = "working"; owner = "working"; failed = false;
     bus = new EventBus(db);
-    queue = new QueueRepository(db, bus, { validateRig: () => true, transport: { send: async (target, message) => {
+    queue = new QueueRepository(db, bus, { settings: openSettingsStore(), validateRig: () => true, transport: { send: async (target, message) => {
       sends.push({ target, message, cause: "queue" }); return { ok: true, verified: true };
     } } });
     queue.attachOutbox(new OutboxHandler(db));
@@ -58,7 +59,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     await queue.update({ qitemId: waiter.qitemId, actorSession: "owner@rig", state: "blocked", blockedOn: blocker.qitemId, wakeAfterSeconds: 300, wakeMaxSeconds: 2400, wakeMessage: waiter.body });
     return { blocker: blocker.qitemId, waiter: waiter.qitemId, job: queue.getParkWakeStatus(waiter.qitemId)!.ref };
   }
-  const sweep = () => runStuckSweep({ credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: queue, now: new Date(), unclaimedAgeMinutes: 60, resolveOrchestrator: () => "orch@rig", isRegisteredHost: () => false });
+  const sweep = () => runStuckSweep({ settings: openSettingsStore(), credentialFiles: NO_CREDENTIAL_FILES, db, queueRepo: queue, now: new Date(), unclaimedAgeMinutes: 60, resolveOrchestrator: () => "orch@rig", isRegisteredHost: () => false });
 
   it("keeps working-owner waits quiet, wakes once for change, and repairs a missed event on the next tick", async () => {
     const { blocker, waiter, job } = await waiting();
@@ -157,7 +158,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
     if (result.action === "send") { expect(result.message).toContain(independently.qitemId); expect(result.message).not.toContain(handoff.created.qitemId); }
     const attempts: string[] = [];
     advance(300);
-    await runWakeLadderTick({ db, queueRepo: queue, now: new Date(), attemptWake: async id => { attempts.push(id); return "failed: synthetic unavailable"; }, resolveOrchestrator: () => "orch@rig" });
+    await runWakeLadderTick({ settings: openSettingsStore(), db, queueRepo: queue, now: new Date(), attemptWake: async id => { attempts.push(id); return "failed: synthetic unavailable"; }, resolveOrchestrator: () => "orch@rig" });
     expect(attempts).toEqual([handoff.created.qitemId]);
   });
 
@@ -168,7 +169,7 @@ describe("quiet waits and bounded recovery on existing domain seams", () => {
   });
 
   it("restart drains only current pending intents and retains superseded history without claiming delivery", async () => {
-    const offline = new QueueRepository(db, bus, { validateRig: () => true });
+    const offline = new QueueRepository(db, bus, { settings: openSettingsStore(), validateRig: () => true });
     offline.attachOutbox(new OutboxHandler(db));
     const source = await offline.create({ sourceSession: "owner@rig", destinationSession: "worker@rig", body: "Old assignment", nudge: false });
     const returned = await offline.handoff({ qitemId: source.qitemId, fromSession: "worker@rig", toSession: "owner@rig", body: "Result", nudge: true });

@@ -1,5 +1,6 @@
-// workspaces-o9o.160: the two readers of the routing registries run the credential rule's procedure: SettingsStore (config.json,
-// still in the domain until workspaces-6ul) and crash-cart's readDaemonJson (daemon.json, in adapters/ since workspaces-o9o.161).
+// workspaces-o9o.160: the two readers of the routing registries run the credential rule's procedure: SettingsStore's config.json
+// (read by adapters/node-settings-file.ts since workspaces-6ul) and crash-cart's readDaemonJson (daemon.json, in adapters/ since
+// workspaces-o9o.161).
 // Every fixture sets its own mode.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
@@ -7,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { SettingsStore, SETTINGS_VALID_KEYS } from "../src/domain/user-settings/settings-store.js";
 import { readDaemonJson } from "../src/adapters/node-crash-cart-probes.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 let dir: string;
 beforeEach(() => { dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "routing-domain-"))); });
@@ -19,7 +21,7 @@ describe("SettingsStore reads config.json under the rule (o9o.160)", () => {
   it("narrows a config.json of ours others can change, and reads it", () => {
     const p = path.join(dir, "config.json");
     put(p, "{}", 0o664);
-    expect(() => new SettingsStore(p).resolveOne(KEY)).not.toThrow();
+    expect(() => openSettingsStore(p).resolveOne(KEY)).not.toThrow();
     expect(fs.statSync(p).mode & 0o777).toBe(0o644);
   });
 
@@ -27,14 +29,14 @@ describe("SettingsStore reads config.json under the rule (o9o.160)", () => {
     const target = path.join(dir, "dotfiles.json");
     put(target, "{}", 0o664);
     fs.symlinkSync(target, path.join(dir, "config.json"));
-    expect(() => new SettingsStore(path.join(dir, "config.json")).resolveOne(KEY)).not.toThrow();
+    expect(() => openSettingsStore(path.join(dir, "config.json")).resolveOne(KEY)).not.toThrow();
     expect(fs.statSync(target).mode & 0o777).toBe(0o644);
     expect(fs.lstatSync(path.join(dir, "config.json")).isSymbolicLink()).toBe(true);
   });
 
   it("refuses a config.json that is not a plain file, naming it", () => {
     fs.mkdirSync(path.join(dir, "config.json"), { mode: 0o700 });
-    expect(() => new SettingsStore(path.join(dir, "config.json")).resolveOne(KEY)).toThrow(/config\.json.*not a regular file/);
+    expect(() => openSettingsStore(path.join(dir, "config.json")).resolveOne(KEY)).toThrow(/config\.json.*not a regular file/);
   });
 });
 

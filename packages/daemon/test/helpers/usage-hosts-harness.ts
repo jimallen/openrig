@@ -17,6 +17,7 @@ import { ProviderServiceImpl } from "../../src/domain/provider/provider-service-
 import { CodexUsageWindows } from "../../src/domain/provider/codex-usage-windows.js";
 import { ClaudeUsageWindows, type ClaudeWindowSample } from "../../src/domain/provider/claude-usage-windows.js";
 import { SettingsStore } from "../../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../src/adapters/node-settings-file.js";
 import { loadHostRegistry, type HostEntry, type HostRegistryLoadResult } from "../../src/domain/hosts/hosts-registry-reader.js";
 import type { ProviderService } from "../../src/domain/provider/provider-service.js";
 import type { CodexUsageReadOutcome } from "../../src/domain/provider/codex-usage-reader.js";
@@ -96,7 +97,7 @@ export class UsageHost {
     this.codex = opts.codex ?? {};
     this.claude = opts.claude ?? {};
     this.samples = opts.samples ?? [];
-    this.settings = new SettingsStore(path.join(home, "config.json"));
+    this.settings = openSettingsStore(path.join(home, "config.json"));
     this.settings.set("provider.usage_windows", String(opts.usageWindows ?? true));
   }
 

@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { configRoutes } from "../src/routes/config.js";
 
 function clearEnv(): () => void {
@@ -54,7 +55,7 @@ describe("config routes (User Settings v0)", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "config-routes-"));
     configPath = join(tmpDir, "config.json");
-    store = new SettingsStore(configPath);
+    store = openSettingsStore(configPath);
     restoreEnv = clearEnv();
   });
   afterEach(() => {

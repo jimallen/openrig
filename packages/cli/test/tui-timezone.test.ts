@@ -3,14 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigStore } from "../src/config-store.js";
-import { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../daemon/src/adapters/node-settings-file.js";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true }); delete process.env.OPENRIG_UI_TIMEZONE; });
 describe("one persistent local-time preference", () => {
   it("round-trips CLI and daemon settings without changing unrelated keys", () => {
     const dir = mkdtempSync(join(tmpdir(), "zone-")); dirs.push(dir); const file = join(dir, "config.json");
     writeFileSync(file, JSON.stringify({ host: { name: "kept" }, ui: { preview: { maxPins: 7 } } }));
-    const cli = new ConfigStore(file); const daemon = new SettingsStore(file);
+    const cli = new ConfigStore(file); const daemon = openSettingsStore(file);
     expect(cli.get("ui.timezone")).toBe("America/Los_Angeles");
     cli.set("ui.timezone", "Europe/London");
     expect(new ConfigStore(file).get("ui.timezone")).toBe("Europe/London");
@@ -23,7 +23,7 @@ describe("one persistent local-time preference", () => {
   });
   it("rejects malformed writes and warns on fallback from file and env on both surfaces", () => {
     const dir = mkdtempSync(join(tmpdir(), "zone-")); dirs.push(dir); const file = join(dir, "config.json");
-    const cli = new ConfigStore(file); const daemon = new SettingsStore(file);
+    const cli = new ConfigStore(file); const daemon = openSettingsStore(file);
     for (const value of ["Mars/Olympus", "", "+02:00"]) {
       expect(() => cli.set("ui.timezone", value)).toThrow(/IANA/);
       expect(() => daemon.set("ui.timezone", value)).toThrow(/IANA/);

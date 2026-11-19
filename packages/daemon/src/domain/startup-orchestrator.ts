@@ -24,7 +24,7 @@ import { SessionTransport, inspectStartupStagedText, type SendOpts } from "./ses
 import { startupOwnCollapsedPaste, startupSubmissionEvidence, type StartupSubmissionDiagnostic } from "./startup-submission-evidence.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { observedResumeTokenToWrite } from "./resume-token-validation.js";
 import { observeClaudeResumeLaunch, type ClaudeLaunchedProcess, type NativeProcessLister, type NativeRuntime } from "./native-process-lineage.js";
@@ -220,7 +220,7 @@ interface StartupOrchestratorDeps {
   readFile?: (path: string) => string;
   /** Sleep between paste and submit for tmux-driven TUIs. */
   sleep?: (ms: number) => Promise<void>;
-  readinessSettings?: Pick<SettingsStore, "resolveOne">;
+  readinessSettings?: SettingsReader;
   /** Process observation for a Claude resume launch's own record of its process (#1077). */
   listProcesses?: NativeProcessLister;
   /** Wall clock for the guarded-send memo (R5); tests inject it. */
@@ -259,7 +259,7 @@ export class StartupOrchestrator {
   /** Sessions whose startup must end as attention_required because typing was stopped on an unreadable pane. */
   private guardAttention = new Map<string, string>();
   private sessionTransport: SessionTransport;
-  private readinessSettings: Pick<SettingsStore, "resolveOne">;
+  private readinessSettings: SettingsReader;
   private listProcesses: NativeProcessLister | undefined;
   private now: () => number;
   private startupTextWaitMs: number;
@@ -273,7 +273,7 @@ export class StartupOrchestrator {
     this.tmuxAdapter = deps.tmuxAdapter;
     this.readFile = deps.readFile ?? (() => "");
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    this.readinessSettings = deps.readinessSettings ?? new SettingsStore();
+    this.readinessSettings = deps.readinessSettings ?? DEFAULT_SETTINGS;
     this.listProcesses = deps.listProcesses;
     this.now = deps.now ?? Date.now;
     this.startupTextWaitMs = deps.startupTextWaitMs ?? STARTUP_TEXT_WAIT_MS;

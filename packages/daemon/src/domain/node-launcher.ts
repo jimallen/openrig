@@ -295,8 +295,8 @@ export class NodeLauncher {
           this.tmuxAdapter,
           sessionName,
           transcriptPath,
-          getTranscriptRotationOptionsFromEnv(),
-          getTranscriptRotationOptionsFromEnv,
+          getTranscriptRotationOptionsFromEnv(this.transcriptStore.settings),
+          () => getTranscriptRotationOptionsFromEnv(this.transcriptStore!.settings),
         );
       } else {
         launchWarnings.push(`Transcript directory creation failed for rig ${rig.rig.name}`);

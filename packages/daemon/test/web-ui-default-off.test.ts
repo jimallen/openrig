@@ -9,7 +9,7 @@ import nodePath from "node:path";
 import { serve, type ServerType } from "@hono/node-server";
 import { createFullTestDb, createTestApp, mockTmuxAdapter } from "./helpers/test-app.js";
 import { createApp, createAppWithWebSocket, WEB_UI_OFF_MESSAGE, type AppDeps } from "../src/server.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 const UI_INDEX_HTML = "<!doctype html><html><head><title>OpenRig UI</title></head><body><div id=\"root\"></div></body></html>";
 const TOKEN = "web-ui-off-token";
@@ -83,9 +83,9 @@ describe("web UI default off (ui.enabled)", () => {
     const prior = process.env.OPENRIG_UI_ENABLED;
     try {
       delete process.env.OPENRIG_UI_ENABLED;
-      expect(new SettingsStore().resolveOne("ui.enabled")).toMatchObject({ value: false, source: "default" });
+      expect(openSettingsStore().resolveOne("ui.enabled")).toMatchObject({ value: false, source: "default" });
       process.env.OPENRIG_UI_ENABLED = "true";
-      expect(new SettingsStore().resolveOne("ui.enabled").value).toBe(true);
+      expect(openSettingsStore().resolveOne("ui.enabled").value).toBe(true);
     } finally {
       if (prior === undefined) delete process.env.OPENRIG_UI_ENABLED; else process.env.OPENRIG_UI_ENABLED = prior;
     }

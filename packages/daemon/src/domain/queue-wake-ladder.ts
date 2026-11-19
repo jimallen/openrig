@@ -55,7 +55,7 @@ import {
   USAGE_LIMIT_BLOCKER_TAG,
   USAGE_LIMIT_POOL_TAG_PREFIX,
 } from "./queue-wake-repository.js";
-import { SettingsStore } from "./user-settings/settings-store.js";
+import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import { loadHumanRegistry, resolveRegisteredHumanAddress, type LoadResult } from "./gateway/human-registry.js";
 import { parseSessionName } from "./session-name.js";
 import {
@@ -158,18 +158,18 @@ export function createWakeLadderStatus(): WakeLadderStatus {
 
 /** The operator seat for the self-skip floor (workspace.operator_seat_name — the
  *  conventional `operator-${USER}@kernel`); null when settings resolution fails. */
-function resolveOperatorSeat(): string | null {
+function resolveOperatorSeat(settings: SettingsReader): string | null {
   try {
-    const v = new SettingsStore().resolveOne("workspace.operator_seat_name" as never).value;
+    const v = settings.resolveOne("workspace.operator_seat_name" as never).value;
     return typeof v === "string" && v.length > 0 ? v : null;
   } catch {
     return null;
   }
 }
 
-function resolveNumber(key: string, fallback: number): number {
+function resolveNumber(settings: SettingsReader, key: string, fallback: number): number {
   try {
-    const v = new SettingsStore().resolveOne(key as never).value;
+    const v = settings.resolveOne(key as never).value;
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   } catch {
@@ -177,16 +177,16 @@ function resolveNumber(key: string, fallback: number): number {
   }
 }
 
-export const resolveWakeRetryIntervalSeconds = (): number =>
-  resolveNumber(WAKE_RETRY_INTERVAL_KEY, DEFAULT_WAKE_RETRY_INTERVAL_SECONDS);
-export const resolveWakeRetryCap = (): number => resolveNumber(WAKE_RETRY_CAP_KEY, DEFAULT_WAKE_RETRY_CAP);
-export const resolveWakeUnconfirmedWindowMinutes = (): number =>
-  resolveNumber(WAKE_UNCONFIRMED_WINDOW_KEY, DEFAULT_WAKE_UNCONFIRMED_WINDOW_MINUTES);
-export const resolveWakeSwapGraceSeconds = (): number =>
-  resolveNumber(WAKE_SWAP_GRACE_KEY, DEFAULT_WAKE_SWAP_GRACE_SECONDS);
-export function resolveWakeHumanRung(): WakeHumanRung {
+export const resolveWakeRetryIntervalSeconds = (settings: SettingsReader): number =>
+  resolveNumber(settings, WAKE_RETRY_INTERVAL_KEY, DEFAULT_WAKE_RETRY_INTERVAL_SECONDS);
+export const resolveWakeRetryCap = (settings: SettingsReader): number => resolveNumber(settings, WAKE_RETRY_CAP_KEY, DEFAULT_WAKE_RETRY_CAP);
+export const resolveWakeUnconfirmedWindowMinutes = (settings: SettingsReader): number =>
+  resolveNumber(settings, WAKE_UNCONFIRMED_WINDOW_KEY, DEFAULT_WAKE_UNCONFIRMED_WINDOW_MINUTES);
+export const resolveWakeSwapGraceSeconds = (settings: SettingsReader): number =>
+  resolveNumber(settings, WAKE_SWAP_GRACE_KEY, DEFAULT_WAKE_SWAP_GRACE_SECONDS);
+export function resolveWakeHumanRung(settings: SettingsReader): WakeHumanRung {
   try {
-    const v = new SettingsStore().resolveOne(WAKE_HUMAN_RUNG_KEY as never).value;
+    const v = settings.resolveOne(WAKE_HUMAN_RUNG_KEY as never).value;
     return v === "explicit-only" ? "explicit-only" : DEFAULT_WAKE_HUMAN_RUNG;
   } catch {
     return DEFAULT_WAKE_HUMAN_RUNG;
@@ -223,6 +223,9 @@ export interface WakeLadderDeps {
   /** The human registry the explicit-only rung uses to tell a handoff addressed to a
    *  person from agent-to-agent work. Defaults to the daemon's registry. */
   loadHumanRegistry?: () => LoadResult;
+  /** The daemon's settings (the ladder's cadence, cap, windows, operator seat and human rung); DEFAULT_SETTINGS when absent
+   *  (workspaces-6ul). */
+  settings?: SettingsReader;
 }
 
 export interface WakeLadderAction {
@@ -478,7 +481,7 @@ function suspensionReason(db: Database.Database, destination: string, graceSecon
 /** Read the existing ladder's next eligible action; never create an intent,
  * reserve a retry, consume provider state or change its policy. The scheduler
  * still makes the final live-state decision at delivery time. */
-export function readWakeLadderBackstop(db: Database.Database, qitemId: string): WaitingView["nextBackstop"] | null {
+export function readWakeLadderBackstop(db: Database.Database, qitemId: string, settings: SettingsReader = DEFAULT_SETTINGS): WaitingView["nextBackstop"] | null {
   const row = db.prepare(`SELECT qitem_id AS qitemId, state, source_session AS sourceSession,
     destination_session AS destinationSession, claimed_at AS claimedAt, handed_off_from AS handedOffFrom,
     last_heartbeat AS lastHeartbeat, last_nudge_result AS lastNudgeResult,
@@ -507,7 +510,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
     mechanism: "queue-wake-ladder:exhausted; queue-stuck-sweep:undelivered", dueAt: null, intervalSeconds: null,
     note: "No further ladder retry. Inspect the retained exhaustion and delivery evidence; the stuck sweep is the safety net.",
   };
-  const interval = resolveWakeRetryIntervalSeconds(), cap = resolveWakeRetryCap(), now = new Date();
+  const interval = resolveWakeRetryIntervalSeconds(settings), cap = resolveWakeRetryCap(settings), now = new Date();
   const retry = mode === "failed" && ladder.attempts < cap;
   if (!retry && recovery && !(readStoredJsonStrings(disposition!.tags) ?? []).includes(WAKE_ESCALATION_TAG)) return recoveryBackstop();
   const last = ladder.lastMarkerTs ?? (row.lastNudgeAttempt ? Date.parse(row.lastNudgeAttempt) : null);
@@ -515,7 +518,7 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
   if (mode === "unconfirmed") {
     // The existing gate compares rounded age-minutes; display its actual
     // earliest eligibility, without changing that policy to fit the face.
-    due = Math.max(due, Date.parse(row.tsCreated) + Math.max(0, resolveWakeUnconfirmedWindowMinutes() - 0.5) * 60_000);
+    due = Math.max(due, Date.parse(row.tsCreated) + Math.max(0, resolveWakeUnconfirmedWindowMinutes(settings) - 0.5) * 60_000);
   }
   if (retry) {
     // Same per-destination attempt budget as the executing ladder. An attempt
@@ -525,12 +528,12 @@ export function readWakeLadderBackstop(db: Database.Database, qitemId: string): 
       .all(row.destinationSession, `${LADDER_ATTEMPT_PREFIX}%`, new Date(now.getTime() - interval * 1000).toISOString(), cap) as Array<{ ts: string }>;
     if (attempts.length >= cap) due = Math.max(due, Date.parse(attempts[cap - 1]!.ts) + interval * 1000 + 1);
   }
-  const suspension = readSuspension(db, row.destinationSession, resolveWakeSwapGraceSeconds(), now);
+  const suspension = readSuspension(db, row.destinationSession, resolveWakeSwapGraceSeconds(settings), now);
   if (suspension) due = Math.max(due, Date.parse(suspension.until));
   const orch = defaultResolveOrchestrator(db, row.destinationSession);
   const operator = ladder.orchRung || orch === null || orch === row.destinationSession;
   return {
-    owner: retry ? row.destinationSession : operator ? resolveOperatorSeat() ?? row.sourceSession : orch!,
+    owner: retry ? row.destinationSession : operator ? resolveOperatorSeat(settings) ?? row.sourceSession : orch!,
     mechanism: retry ? "queue-wake-ladder:retry" : ladder.opEngineDispatched ? "queue-wake-ladder:operator-outcome" : operator ? "queue-wake-ladder:operator" : "queue-wake-ladder:orchestrator",
     dueAt: ladder.opEngineDispatched ? null : new Date(due).toISOString(), intervalSeconds: interval,
     ...(suspension ? { suspendedUntil: suspension.until, note: suspension.reason } : { note: "Earliest eligibility; the next scheduler pass rechecks provider state, custody and the shared destination budget." }),
@@ -660,10 +663,10 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
         return row && (!["pending", "in-progress", "blocked"].includes(row.state) || row.lastNudgeResult === "verified" || Boolean(row.claimedAt && row.claimedAt > aggregate.ts_created));
       })) await deps.queueRepo.update({ qitemId: aggregate.qitem_id, actorSession: aggregate.source_session, state: "done", closureReason: "no-follow-on", transitionNote: "wake recovery resolved: tagged obligations no longer require delivery recovery" });
     }
-    const intervalS = deps.retryIntervalSeconds ?? resolveWakeRetryIntervalSeconds();
-    const cap = deps.retryCap ?? resolveWakeRetryCap();
-    const windowMin = deps.unconfirmedWindowMinutes ?? resolveWakeUnconfirmedWindowMinutes();
-    const graceS = deps.swapGraceSeconds ?? resolveWakeSwapGraceSeconds();
+    const intervalS = deps.retryIntervalSeconds ?? resolveWakeRetryIntervalSeconds(deps.settings ?? DEFAULT_SETTINGS);
+    const cap = deps.retryCap ?? resolveWakeRetryCap(deps.settings ?? DEFAULT_SETTINGS);
+    const windowMin = deps.unconfirmedWindowMinutes ?? resolveWakeUnconfirmedWindowMinutes(deps.settings ?? DEFAULT_SETTINGS);
+    const graceS = deps.swapGraceSeconds ?? resolveWakeSwapGraceSeconds(deps.settings ?? DEFAULT_SETTINGS);
     const resolveOrch =
       deps.resolveOrchestrator ?? ((session: string) => defaultResolveOrchestrator(deps.db, session));
     const attemptWake =
@@ -915,7 +918,7 @@ export async function runWakeLadderTick(deps: WakeLadderDeps): Promise<WakeLadde
           // per-destination escalation row exists (addressed to the operator seat, else
           // the obligation's own creator) so the escalations view and the health count
           // expose it — it stays open past the batons' exhaustion.
-          const floorDest = resolveOperatorSeat() ?? needsOrchRung[0]!.row.sourceSession;
+          const floorDest = resolveOperatorSeat(deps.settings ?? DEFAULT_SETTINGS) ?? needsOrchRung[0]!.row.sourceSession;
           if (!(await ensureEscalationRow(deps, dest, floorDest, needsOrchRung, reason))) continue;
           for (const m of needsOrchRung) {
             appendMarker(
@@ -1165,7 +1168,7 @@ async function advancePromptRefusals(
     const toOperator = orch === null || orch === dest;
     const reason = "interactive prompt blocks outstanding work; no input was sent";
     const aggregate = await ensureEscalationRow(deps, dest,
-      toOperator ? resolveOperatorSeat() ?? members[0]!.row.sourceSession : orch!, members, reason,
+      toOperator ? resolveOperatorSeat(deps.settings ?? DEFAULT_SETTINGS) ?? members[0]!.row.sourceSession : orch!, members, reason,
       `prompt-destination:${dest}`, [PROMPT_ALERT_TAG, ...group.keys]);
     if (!aggregate) continue;
     const row = readOrName(deps, aggregate.qitemId);
@@ -1244,7 +1247,7 @@ async function operatorRung(
   if (
     humanRungSettingApplies &&
     !view.opEngineDispatched &&
-    (deps.humanRung ?? resolveWakeHumanRung()) === "explicit-only" &&
+    (deps.humanRung ?? resolveWakeHumanRung(deps.settings ?? DEFAULT_SETTINGS)) === "explicit-only" &&
     !addressedToPerson(deps, row.destinationSession)
   ) {
     // Agent-to-agent work: the escalation row stays the visible object for the

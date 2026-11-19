@@ -5,6 +5,7 @@ import { mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { cachedFlag, nativeClaudeFlag, NATIVE_CLAUDE_ENV, settingsFileSignature } from "../src/domain/native-claude-setting.js";
 
 // The real statSync by default; one test hands the signature a fabricated stat (see the inode row).
@@ -93,7 +94,7 @@ describe("settingsFileSignature: the inode term", () => {
 
 describe("the wired flag: a real SettingsStore, a real file", () => {
   function wired(p: string) {
-    const store = new SettingsStore(p);
+    const store = openSettingsStore(p);
     let reads = 0;
     const real = store.resolveOne.bind(store);
     store.resolveOne = ((...a: Parameters<typeof real>) => { reads++; return real(...a); }) as typeof store.resolveOne;

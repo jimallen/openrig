@@ -139,6 +139,7 @@ import { SeatAttentionReconciler } from "../../src/domain/seat-attention-reconci
 import { createApp, createAppWithWebSocket } from "../../src/server.js";
 import fs from "node:fs";
 import { lexicalAgentFs } from "./lexical-agent-fs.js";
+import { openSettingsStore } from "../../src/adapters/node-settings-file.js";
 
 /** Seam B R6: the canonical full-fixture migration list, exported so file-backed
  *  DB-reopen tests migrate IDENTICALLY to createFullTestDb. */
@@ -381,7 +382,7 @@ export function createTestApp(
     adapters,
   });
 
-  const bootstrapOrchestrator = new BootstrapOrchestrator({
+  const bootstrapOrchestrator = new BootstrapOrchestrator({ settings: openSettingsStore(),
     db, bootstrapRepo, runtimeVerifier, probeRegistry,
     installPlanner: externalInstallPlanner, installExecutor: externalInstallExecutor,
     packageInstallService, rigInstantiator, fsOps: {

@@ -25,7 +25,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { PiRuntimeAdapter, type PiAdapterFsOps } from "../src/adapters/pi-runtime-adapter.js";
 import { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import { piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 const dbs: Database.Database[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
@@ -252,7 +252,7 @@ describe("the host setting pi.operator_login_dir", () => {
   afterEach(() => { rmSync(tmp, { recursive: true, force: true }); if (saved === undefined) delete process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR; else process.env.OPENRIG_PI_OPERATOR_LOGIN_DIR = saved; });
 
   it("defaults to unset (empty) and resolves a stored absolute folder and the environment name", () => {
-    const store = new SettingsStore(file);
+    const store = openSettingsStore(file);
     expect(store.resolveOne("pi.operator_login_dir")).toMatchObject({ value: "", source: "default" });
     store.set("pi.operator_login_dir", "/home/me/.pi/agent");
     expect(store.resolveOne("pi.operator_login_dir")).toMatchObject({ value: "/home/me/.pi/agent", source: "file" });
@@ -261,11 +261,11 @@ describe("the host setting pi.operator_login_dir", () => {
   });
 
   it.each([["a relative path", "agent"], ["a dotdot part", "/a/../b"], ["leading space", " /a"], ["a tilde", "~/.pi/agent"]])("refuses %s", (_n, value) => {
-    expect(() => new SettingsStore(file).set("pi.operator_login_dir", value)).toThrow(/Invalid pi\.operator_login_dir/);
+    expect(() => openSettingsStore(file).set("pi.operator_login_dir", value)).toThrow(/Invalid pi\.operator_login_dir/);
   });
 
   it("accepts the empty string (unset again)", () => {
-    const store = new SettingsStore(file);
+    const store = openSettingsStore(file);
     store.set("pi.operator_login_dir", "/a");
     store.set("pi.operator_login_dir", "");
     expect(store.resolveOne("pi.operator_login_dir").value).toBe("");

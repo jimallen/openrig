@@ -15,7 +15,7 @@ import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ContextUsageStore } from "../src/domain/context-usage-store.js";
 import { ContextMonitor } from "../src/domain/context-monitor.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { SessionTransport, classifyPaneActivity } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
@@ -136,7 +136,7 @@ describe("post-compact drain readiness without a usage sample", () => {
         return { ok: true };
       },
     } as unknown as SessionTransport;
-    const settings = new SettingsStore(join(home, "settings.json"));
+    const settings = openSettingsStore(join(home, "settings.json"));
     settings.set("policies.claude_compaction.enabled", "true");
     settings.set("policies.claude_compaction.threshold_percent", "80");
     enforcer = new ClaudeCompactionEnforcer(settings, transport, {

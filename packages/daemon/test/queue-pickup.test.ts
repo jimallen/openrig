@@ -19,7 +19,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { QueueRepository, type QueueItem } from "../src/domain/queue-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { ViewProjector } from "../src/domain/view-projector.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 const THRESHOLD_ENV = "OPENRIG_QUEUE_PICKUP_STALL_THRESHOLD_MINUTES";
 
@@ -40,7 +40,7 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
   beforeEach(() => {
     db = new Database(":memory:");
     migrate(db, ALL_MIGRATIONS);
-    repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+    repo = new QueueRepository(db, new EventBus(db), { settings: openSettingsStore(), validateRig: () => true });
     priorEnv = process.env[THRESHOLD_ENV];
     delete process.env[THRESHOLD_ENV];
   });
@@ -99,7 +99,7 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
 
   it("FOUNDER DEFAULT: the daemon config surface defaults the pickup stall threshold to 3 minutes", () => {
     const missingConfig = `/tmp/openrig-s04-missing-${process.pid}-${Date.now()}.json`;
-    const setting = new SettingsStore(missingConfig).resolveOne(
+    const setting = openSettingsStore(missingConfig).resolveOne(
       "queue.pickup_stall_threshold_minutes" as never,
     );
     expect(setting).toMatchObject({ value: 3, source: "default", defaultValue: 3 });
@@ -228,7 +228,7 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
     ageClaim(row.qitemId, 60);
-    const projector = new ViewProjector(db, new EventBus(db));
+    const projector = new ViewProjector(db, new EventBus(db), { settings: openSettingsStore() });
     const result = projector.show("pickup");
     const mine = result.rows.find((r) => r.qitem_id === row.qitemId) as Record<string, unknown> | undefined;
     expect(mine, "the pickup lens must list the claimed row").toBeDefined();

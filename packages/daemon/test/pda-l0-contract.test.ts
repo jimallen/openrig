@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ALL_MIGRATIONS, RESERVED_MIGRATION_NAMES } from "../src/db/all-migrations.js";
-import { SettingsStore, SETTINGS_VALID_KEYS } from "../src/domain/user-settings/settings-store.js";
+import { SETTINGS_VALID_KEYS } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { ConfigStore, VALID_KEYS } from "../../cli/src/config-store.js";
 import {
   adapterFreshStart, adapterStartupContent, isAttentionRequiredReadinessCode,
@@ -46,7 +47,7 @@ describe("usage.pda_cost_facts (review D2): both twins, default off", () => {
     expect(VALID_KEYS as readonly string[]).toContain("usage.pda_cost_facts");
   });
   it("defaults to false on both sides", () => {
-    expect(new SettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts"))
+    expect(openSettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts"))
       .toMatchObject({ value: false, source: "default", defaultValue: false });
     expect(new ConfigStore(join(dir, "config.json")).resolveWithSource("usage.pda_cost_facts"))
       .toMatchObject({ value: false, source: "default" });
@@ -54,11 +55,11 @@ describe("usage.pda_cost_facts (review D2): both twins, default off", () => {
   });
   it("reads the env override and the file value on both sides, at the same path", () => {
     process.env.OPENRIG_USAGE_PDA_COST_FACTS = "true";
-    expect(new SettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts")).toMatchObject({ value: true, source: "env" });
+    expect(openSettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts")).toMatchObject({ value: true, source: "env" });
     expect(new ConfigStore(join(dir, "config.json")).resolveWithSource("usage.pda_cost_facts")).toMatchObject({ value: true, source: "env" });
     delete process.env.OPENRIG_USAGE_PDA_COST_FACTS;
     writeFileSync(join(dir, "config.json"), JSON.stringify({ usage: { pdaCostFacts: true } }));
-    expect(new SettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts")).toMatchObject({ value: true, source: "file" });
+    expect(openSettingsStore(join(dir, "config.json")).resolveOne("usage.pda_cost_facts")).toMatchObject({ value: true, source: "file" });
     expect(new ConfigStore(join(dir, "config.json")).resolveWithSource("usage.pda_cost_facts")).toMatchObject({ value: true, source: "file" });
   });
 });

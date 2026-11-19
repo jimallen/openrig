@@ -10,10 +10,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  SettingsStore,
-  parseFeedHostSubscriptionKey as daemonParse,
-} from "../src/domain/user-settings/settings-store.js";
+import { SettingsStore, parseFeedHostSubscriptionKey as daemonParse } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { parseFeedHostSubscriptionKey as cliParse } from "../../cli/src/config-store.js";
 
 let dir: string;
@@ -30,7 +28,7 @@ afterEach(() => {
 });
 
 function store(): SettingsStore {
-  return new SettingsStore(configPath);
+  return openSettingsStore(configPath);
 }
 
 describe("dynamic feed-host subscription keys — daemon store", () => {

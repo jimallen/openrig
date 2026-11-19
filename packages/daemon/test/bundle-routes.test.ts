@@ -13,6 +13,7 @@ import { LegacyBundleSourceResolver } from "../src/domain/bundle-source-resolver
 import type { FsOps } from "../src/domain/package-resolver.js";
 import * as tar from "tar";
 import { createHash } from "node:crypto";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 
 const VALID_SPEC = `
@@ -3529,7 +3530,7 @@ describe("bundle create --context-pack: a world pack outside the rig folder", ()
     expect(fs.readFileSync(path.join(extracted, "bundle.yaml"), "utf-8")).toContain("context-packs/demo-world/manifest.yaml");
 
     const { routeBundleContents } = await import("../src/domain/bundle-content-routing.js");
-    const routing = await routeBundleContents(outputPath);
+    const routing = await routeBundleContents(outputPath, { settings: openSettingsStore() });
     expect(routing.contextPacksRouting?.records[0]).toMatchObject({ status: "routed" });
     expect(fs.readFileSync(path.join(contextRoot, "demo-world", "identity", "who.md"), "utf-8")).toBe("# Who we are\n");
     expect(fs.existsSync(path.join(contextRoot, "demo-world", "README.md"))).toBe(false);
@@ -3545,7 +3546,7 @@ describe("bundle create --context-pack: a world pack outside the rig folder", ()
     fs.writeFileSync(path.join(installed, ".openrig-git-source.json"), '{"pack":"."}\n');
 
     const { routeBundleContents } = await import("../src/domain/bundle-content-routing.js");
-    const routing = await routeBundleContents(outputPath);
+    const routing = await routeBundleContents(outputPath, { settings: openSettingsStore() });
 
     expect(routing.contextPacksRouting?.records[0]?.status).toBe("kept_existing");
     expect(fs.readFileSync(path.join(installed, "manifest.yaml"), "utf-8")).toBe(gitManifest);
@@ -3614,7 +3615,7 @@ describe("bundle create --project-dir: install registers the project and associa
     expect(res.status).toBe(201);
 
     const { routeBundleContents } = await import("../src/domain/bundle-content-routing.js");
-    const routing = await routeBundleContents(outputPath);
+    const routing = await routeBundleContents(outputPath, { settings: openSettingsStore() });
 
     expect(routing.routingFailures).toBeUndefined();
     expect(routing.projectRegistration).toMatchObject({ status: "registered", projectId: "openrig", rigName: "openrig-dev" });

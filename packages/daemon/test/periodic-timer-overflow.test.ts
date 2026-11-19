@@ -12,7 +12,7 @@ import { SnapshotRepository } from "../src/domain/snapshot-repository.js";
 import { CheckpointStore } from "../src/domain/checkpoint-store.js";
 import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { PeriodicSnapshotScheduler } from "../src/domain/periodic-snapshot-scheduler.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 it("does not snapshot a monthly schedule immediately through native timer overflow", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "monthly-snapshot-"));
@@ -22,7 +22,7 @@ it("does not snapshot a monthly schedule immediately through native timer overfl
   const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus: new EventBus(db), snapshotRepo, checkpointStore: new CheckpointStore(db) });
   const scheduler = new PeriodicSnapshotScheduler({ db, snapshotCapture, snapshotRepo });
   try {
-    const store = new SettingsStore(path.join(temp, "config.json"));
+    const store = openSettingsStore(path.join(temp, "config.json"));
     store.set("snapshots.periodic.interval_seconds", "2592000");
     const interval = store.resolveOne("snapshots.periodic.interval_seconds");
     expect(interval).toMatchObject({ value: 2592000, source: "file" });

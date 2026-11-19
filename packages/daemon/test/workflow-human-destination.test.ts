@@ -14,6 +14,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
 import { resolveWorkflowHumanDestination } from "../src/domain/workflow-human-destination.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { addHumanFragment, writeProjection, projectionPath, type HumanFragment } from "../src/domain/gateway/human-registry.js";
 import { makeEnsureStuckExceptionItem } from "../src/domain/workflow-exception-escalation.js";
 import { workflowRoutes } from "../src/routes/workflow.js";
@@ -22,11 +23,10 @@ type TransportSend = NonNullable<NonNullable<ConstructorParameters<typeof QueueR
 
 // SettingsStore captures its default path at import time. Keep real setting
 // resolution, but bind each caller to this test's registry/config directory.
-vi.mock("../src/domain/user-settings/settings-store.js", async importOriginal => {
-  const actual = await importOriginal<typeof import("../src/domain/user-settings/settings-store.js")>();
-  return { ...actual, SettingsStore: class extends actual.SettingsStore {
-    constructor(configPath?: string) { super(configPath ?? join(process.env["OPENRIG_HOME"]!, "config.json")); }
-  } };
+vi.mock("../src/adapters/node-settings-file.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/adapters/node-settings-file.js")>();
+  return { ...actual,
+    openSettingsStore: (configPath?: string) => actual.openSettingsStore(configPath ?? join(process.env["OPENRIG_HOME"]!, "config.json")) };
 });
 
 const human = (name: string): HumanFragment => ({ entityId: name, class: "human", displayName: name,
@@ -99,13 +99,13 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
 
   it("an explicit existing setting selects among humans and is re-read for the next episode", () => {
     add("owner-one"); add("owner-two");
-    expect(() => resolveWorkflowHumanDestination()).toThrow(/explicitly select/);
+    expect(() => resolveWorkflowHumanDestination(openSettingsStore())).toThrow(/explicitly select/);
     vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "owner-two@external");
-    expect(resolveWorkflowHumanDestination()).toBe("owner-two@external");
+    expect(resolveWorkflowHumanDestination(openSettingsStore())).toBe("owner-two@external");
     vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "owner-one@external");
-    expect(resolveWorkflowHumanDestination()).toBe("owner-one@external");
+    expect(resolveWorkflowHumanDestination(openSettingsStore())).toBe("owner-one@external");
     vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "human@host");
-    expect(() => resolveWorkflowHumanDestination()).toThrow(/does not select a registered human/);
+    expect(() => resolveWorkflowHumanDestination(openSettingsStore())).toThrow(/does not select a registered human/);
   });
 
   it.each(["missing", "ambiguous", "registry-unavailable"])("%s selection returns 409 and rolls back the failed close without a phantom row", async (state) => {

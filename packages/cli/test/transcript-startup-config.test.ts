@@ -7,7 +7,7 @@ import { buildDaemonEnv, startDaemon } from "../src/daemon-lifecycle.js";
 import { daemonCommand } from "../src/commands/daemon.js";
 import { startCommand } from "../src/commands/start.js";
 import { upCommand } from "../src/commands/up.js";
-import { SettingsStore } from "../../daemon/src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../../daemon/src/adapters/node-settings-file.js";
 import { createTranscriptRotationOptionsResolver } from "../../daemon/src/domain/transcript-rotation.js";
 
 vi.mock("../src/daemon-lifecycle.js", async (original) => {
@@ -40,7 +40,7 @@ it.each(["daemon", "start", "up"])("%s startup leaves file settings live and pre
   expect(daemonEnv["OPENRIG_TRANSCRIPTS_LINES"]).toBeUndefined();
   expect(daemonEnv["OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS"]).toBeUndefined();
   vi.useFakeTimers();
-  const resolve = createTranscriptRotationOptionsResolver(new SettingsStore(file));
+  const resolve = createTranscriptRotationOptionsResolver(openSettingsStore(file));
   expect(resolve()).toEqual({ lines: 40, pollIntervalMs: 3000 });
   cli.set("transcripts.lines", "20"); cli.set("transcripts.poll_interval_seconds", "1");
   await vi.advanceTimersByTimeAsync(1000);

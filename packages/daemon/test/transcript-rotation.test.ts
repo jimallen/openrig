@@ -19,6 +19,7 @@ import {
 } from "../src/domain/transcript-rotation.js";
 import { nodeTranscriptFiles } from "../src/adapters/node-transcript-files.js";
 import type { TranscriptHost } from "../src/domain/transcript-rotation.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 /** Rotation takes a TranscriptHost, which a plain object with capturePaneContent already is: no cast needed (workspaces-o9o.129). A plain
  *  object, not a TmuxAdapter, because rotation batches whenever the host also has capturePanesContent. */
@@ -286,7 +287,7 @@ describe("startTranscriptRotation — timer lifecycle", () => {
 
 describe("getTranscriptRotationOptionsFromEnv — env override + defaults", () => {
   it("returns the documented defaults when no env vars are set", () => {
-    const opts = getTranscriptRotationOptionsFromEnv();
+    const opts = getTranscriptRotationOptionsFromEnv(openSettingsStore());
     expect(opts.lines).toBe(DEFAULT_TRANSCRIPT_LINES);
     expect(opts.pollIntervalMs).toBe(DEFAULT_TRANSCRIPT_POLL_INTERVAL_MS);
     expect(opts.lines).toBe(1000);
@@ -296,7 +297,7 @@ describe("getTranscriptRotationOptionsFromEnv — env override + defaults", () =
   it("honors OPENRIG_TRANSCRIPTS_LINES + OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS overrides", () => {
     process.env.OPENRIG_TRANSCRIPTS_LINES = "500";
     process.env.OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS = "5";
-    const opts = getTranscriptRotationOptionsFromEnv();
+    const opts = getTranscriptRotationOptionsFromEnv(openSettingsStore());
     expect(opts.lines).toBe(500);
     expect(opts.pollIntervalMs).toBe(5000);
   });
@@ -304,7 +305,7 @@ describe("getTranscriptRotationOptionsFromEnv — env override + defaults", () =
   it("rejects non-positive / non-numeric values and uses defaults", () => {
     process.env.OPENRIG_TRANSCRIPTS_LINES = "0";
     process.env.OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS = "not-a-number";
-    const opts = getTranscriptRotationOptionsFromEnv();
+    const opts = getTranscriptRotationOptionsFromEnv(openSettingsStore());
     expect(opts.lines).toBe(DEFAULT_TRANSCRIPT_LINES);
     expect(opts.pollIntervalMs).toBe(DEFAULT_TRANSCRIPT_POLL_INTERVAL_MS);
   });

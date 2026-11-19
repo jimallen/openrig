@@ -19,7 +19,7 @@ import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { nonInterruptiveArgs, nonInterruptiveNotice } from "../src/adapters/non-interruptive.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
-import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 import { existingRigRoot } from "./helpers/existing-rig-root.js";
 import { GUARD_FLAG, GUARD_JSON } from "./helpers/claude-guard.js";
 
@@ -61,7 +61,7 @@ describe("non-interruptive launch choice", () => {
   });
 
   it("one typed operator default is off and does not mutate rig or harness settings", () => {
-    const settings = new SettingsStore(join(root(), "config.json"));
+    const settings = openSettingsStore(join(root(), "config.json"));
     expect(settings.resolveOne("launch.non_interruptive").value).toBe(false);
     settings.set("launch.non_interruptive", "true");
     expect(settings.resolveOne("launch.non_interruptive").value).toBe(true);

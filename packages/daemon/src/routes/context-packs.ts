@@ -24,7 +24,7 @@ import { parseManifest } from "../domain/context-packs/manifest-parser.js";
 import { composeNamedProfile, composeProfile, ProfileComposeError, type ComposeInput, type ComposeRuntime, type ComposeSituation } from "../domain/context-packs/profile-composer.js";
 import { isSeatRecapAddress, makeProfileReadFile, sourceKindForAddress, SourceResolutionError, type ProfileSourceRoots, type SourceReadRecord } from "../domain/context-packs/profile-source-resolver.js";
 import { AddressResolutionError, parseAddress, resolveAddress } from "../domain/markdown-address.js";
-import { SettingsStore } from "../domain/user-settings/settings-store.js";
+import { openSettingsStore } from "../adapters/node-settings-file.js";
 
 interface ComposeBody {
   outRef?: string;
@@ -398,7 +398,7 @@ export function contextPacksRoutes(): Hono {
       if (!rig || !seat || !SEGMENT.test(rig) || !SEGMENT.test(seat)) {
         return c.json({ error: "invalid_seat_params", message: "rig and seat must BOTH be single bounded segments ([A-Za-z0-9][A-Za-z0-9._-]{0,63})" }, 400);
       }
-      const topologyRoot = String(new SettingsStore().resolveOne("topology.root").value);
+      const topologyRoot = String(openSettingsStore().resolveOne("topology.root").value);
       roots.seat = join(topologyRoot, "rigs", rig, "seats", seat);
       contextAtoms.seat = [{
         id: "profile-seat-learned",
@@ -436,7 +436,7 @@ export function contextPacksRoutes(): Hono {
       if (!SEGMENT.test(mission)) {
         return c.json({ error: "invalid_mission_param", message: "mission must be a single bounded segment ([A-Za-z0-9][A-Za-z0-9._-]{0,63})" }, 400);
       }
-      const settings = new SettingsStore();
+      const settings = openSettingsStore();
       const slicesRoot = String(settings.resolveOne("workspace.slices_root").value);
       roots.mission = join(slicesRoot, mission);
 

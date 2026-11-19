@@ -26,6 +26,7 @@ import { ProbeTimeoutError, RUNTIME_PROBE_TIMEOUT_MS } from "../src/adapters/bou
 import type { FsOps } from "../src/domain/package-resolver.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { setOffCommands, rigWords, closesCleanly } from "./helpers/shell-argv.js";
+import { openSettingsStore } from "../src/adapters/node-settings-file.js";
 
 
 /** The seat host bootstrap verifies is hc: `hc --version` on the PATH and a core that answers `hello` (injected, so no
@@ -196,7 +197,7 @@ describe("BootstrapOrchestrator", () => {
     const packageInstallService = new PackageInstallService({ packageRepo, installRepo, installEngine, installVerifier });
     const instantiator = opts?.instantiator ?? createMockInstantiator(db);
 
-    return new BootstrapOrchestrator({
+    return new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo,
       runtimeVerifier,
@@ -855,7 +856,7 @@ requirements:
     });
     const packageInstallService = new PackageInstallService({ packageRepo, installRepo, installEngine, installVerifier });
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db, bootstrapRepo, runtimeVerifier, probeRegistry, installPlanner, installExecutor,
       packageInstallService, rigInstantiator: createMockInstantiator(db) as any, fsOps: realFsOps(),
     });
@@ -901,7 +902,7 @@ edges: []
     migrate(db2, ALL_MIGRATIONS);
 
     expect(() => {
-      new BootstrapOrchestrator({
+      new BootstrapOrchestrator({ settings: openSettingsStore(),
         db,
         bootstrapRepo: new BootstrapRepository(db2), // Wrong db
         runtimeVerifier: new RuntimeVerifier({ exec: vi.fn() as any, db, hcHello }),
@@ -1655,7 +1656,7 @@ ${integrityYaml}
     const legacyBundleResolver = new BundleSourceResolver({ fsOps: realFsOps() });
     const mockPodInstantiator = { db, instantiate: vi.fn() };
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
@@ -1731,7 +1732,7 @@ edges: []
       })),
     };
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
@@ -1810,7 +1811,7 @@ edges: []
       })),
     };
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
@@ -1884,7 +1885,7 @@ edges: []
       })),
     };
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
@@ -1943,7 +1944,7 @@ edges: []
       })),
     };
 
-    const orch = new BootstrapOrchestrator({
+    const orch = new BootstrapOrchestrator({ settings: openSettingsStore(),
       db,
       bootstrapRepo: new BootstrapRepository(db),
       runtimeVerifier: new RuntimeVerifier({ exec: createMockExec({}), db, hcHello }),
