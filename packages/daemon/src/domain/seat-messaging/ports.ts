@@ -17,7 +17,9 @@ export function messageId(id: string): MessageId {
 /** Free text inside an id the daemon builds (a session name, a caller's qitem id), put into the alphabet a gate marker carries
  *  (`[A-Za-z0-9._:-]`, `NATIVE_MARKER_RE`). An id outside it can carry no marker, so the transport sends it past the pump (workspaces-d7l:
  *  `dev@rig` in a model-monitor id). Letters, digits, `.`, `:` and `-` stand; every other UTF-8 byte, `_` included, becomes `_` and two hex
- *  digits: `dev@rig` is `dev_40rig`. A part already in the alphabet without `_` keeps its bytes, and two different parts never encode alike. */
+ *  digits: `dev@rig` is `dev_40rig`. A part already in the alphabet without `_` keeps its bytes. It is injective over the inputs it receives:
+ *  session names, which the daemon validates to ASCII, and queue item ids, which SQLite stores canonicalised. It is not injective over every
+ *  JavaScript string: UTF-8 has no lone surrogate, so the encoder writes each one as U+FFFD and `\uD800`, `\uDC00` and `�` encode alike. */
 export function markableIdPart(text: string): string {
   let out = "";
   for (const byte of new TextEncoder().encode(text)) {
