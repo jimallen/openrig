@@ -21,8 +21,8 @@ message names this page, which is how a contributor who trips the rule finds it.
   language, and shaped by what the domain needs, not by what one implementation happens to offer.
 - **An adapter** implements a port against the outside world. Adapters live in `src/adapters/`.
 - **The composition root** is `src/startup.ts` (`createDaemon()`): it constructs each adapter and hands it to the domain
-  services that take the port, usually through a constructor. `src/routes/`, `src/server.ts` and `src/index.ts` are the
-  driving side (HTTP in); they may import both the domain and the adapters.
+  services that take the port, usually through a constructor. `src/routes/`, `src/middleware/`, `src/server.ts` and
+  `src/index.ts` are the driving side (HTTP in); they may import both the domain and the adapters.
 
 ## The rule
 
@@ -33,6 +33,15 @@ A file in `packages/daemon/src/domain/` must not import:
 3. **an infrastructure module** (rule `domain-imports-infrastructure`): `better-sqlite3` (and its subpaths),
    `node:fs`, `node:fs/promises`, `node:child_process`, `node:net`, `node:http`, `node:os`. The bare names (`fs`, `os`, ...)
    are the same modules.
+4. **the global `fetch`** (rule `domain-uses-global-fetch`, workspaces-o9o.183): HTTP from the domain needs no import, so the
+   import rules alone let it pass. A domain file that reaches the global `fetch` as a value is a violation, recorded as the
+   pseudo-target `global:fetch` with kind `value`: a call `fetch(...)`, passing or storing it (`opts.fetchImpl ?? fetch`,
+   `{ fetch }`), and `globalThis.fetch` or `globalThis["fetch"]` (also through `global`, `self` and `window`). Not counted:
+   `fetch` in a type position (`typeof fetch` names the shape of a port, not the I/O), a property or member named `fetch`
+   (`deps.fetch(...)`, `{ fetch: f }`), a `fetch` bound in an enclosing scope (a parameter, a variable, a function, a class
+   or an import of that name), and a string or a comment. The fix is the same as for an import: the domain declares the
+   HTTP it needs as a port (`SlackTransport` in `domain/gateway/slack/slack-api.ts` is one), an adapter implements it
+   (`src/adapters/slack-http-transport.ts`), and the composition root hands it in.
 
 "Import" means every form that loads or names a module: a static `import` (side-effect `import "x"` included), `import
 type`, an import whose specifiers are all inline `type`, `export ... from` and `export * from`, `import x = require("x")`,
@@ -91,7 +100,10 @@ reaches much further than the files with that name: 156 domain files import `bet
   Neither is a violation today.
 - **Modules allowed for now.** At `eb2fe398` the domain also imports `node:worker_threads` (1 statement), `node:perf_hooks`
   (4), `tar` (1, which reads and writes files) and `hono` (4, the HTTP framework). By Jim's decision the list stays as it
-  is: these four are allowed for now and will be revisited later.
+  is: these four are allowed for now and will be revisited later. Since workspaces-o9o.183 `hono` is 3: the host
+  read-through's middleware moved to `src/middleware/host-read-through.ts`, and `domain/hosts/read-through.ts` keeps the rule
+  and the forward over plain values (a test pins that it imports no `hono`). The other three (`route-timing-recorder.ts`,
+  `slow-op-recorder.ts`, `request-phase-observer.ts`) are type-only imports of `MiddlewareHandler`/`Context`.
 - **Code the scanner cannot see.** `src/domain/slow-op-recorder.ts` builds a worker from a `String.raw` template that
   calls `require("node:fs")`; that file I/O is invisible to a parser by construction. An independent regex scan, which
   does read strings, found no other forbidden module named inside a string at `eb2fe398`. Two more forms are invisible
@@ -155,7 +167,8 @@ reads as the fork's; a fork import that upstream's copy also has reads as upstre
 `packages/daemon/test/fork-hexagonal-boundary.test.ts` runs in the daemon suite (`npm test -w packages/daemon`). It parses
 every domain file the daemon's tsconfig compiles (so a new `.tsx`, `.mts` or `.cts` file is read like a `.ts` one), compares the violations with `hexagonal-baseline.txt`, and fails on:
 
-- a violation not in the baseline (naming the file and lines, the target, the kind and the rule, and how to fix it);
+- a violation not in the baseline (naming the file and lines, the target, the kind and the rule, and how to fix it), a
+  use of the global `fetch` included;
 - a stale line, whose violation is gone (naming the baseline line to delete);
 - a `value` line whose import became type-only (to tighten);
 - a non-literal dynamic import it cannot read, other than the known one;

@@ -32,7 +32,7 @@ export const RULE_DOC = "local/architecture/hexagonal-boundary.md";
 export const SYNC_COMMAND = "node --import tsx packages/daemon/test/helpers/fork-hexagonal-boundary.ts sync";
 
 export type ImportKind = "value" | "type";
-export type ImportForm = "import" | "import-type" | "export-from" | "import-equals" | "dynamic-import" | "require" | "type-position-import";
+export type ImportForm = "import" | "import-type" | "export-from" | "import-equals" | "dynamic-import" | "require" | "type-position-import" | "global-reference";
 export interface ImportEdge { specifier: string; kind: ImportKind; form: ImportForm; line: number }
 export interface UnresolvedImport { form: "dynamic-import" | "require"; line: number; text: string }
 
@@ -80,12 +80,91 @@ export function scanImports(fileName: string, source: string): { edges: ImportEd
   return { edges, unresolved };
 }
 
+/**
+ * workspaces-o9o.183: every line where a source file reaches the GLOBAL fetch as a value: a call `fetch(...)`, passing or storing
+ * it (`opts.fetchImpl ?? fetch`, `{ fetch }`), and `globalThis.fetch` / `globalThis["fetch"]` (or `global`, `self`, `window`).
+ * Not counted: a name in a type position (`typeof fetch` names a shape, not the I/O), a property named fetch (`deps.fetch(...)`,
+ * `{ fetch: f }`, `interface X { fetch: ... }`), and a `fetch` bound in an enclosing scope (a parameter, a variable, a function,
+ * a class or an import of that name), which is not the global. Read by the parser, so a string or a comment never counts.
+ */
+export function scanGlobalFetch(fileName: string, source: string): number[] {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKind(fileName));
+  const lines = new Set<number>();
+  const lineOf = (node: ts.Node): number => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) return; // a type position names no value
+    if (ts.isIdentifier(node) && node.text === "fetch" && isGlobalValueReference(node)) lines.add(lineOf(node));
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "fetch" && isGlobalReceiver(node.expression)) lines.add(lineOf(node));
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && node.argumentExpression.text === "fetch"
+      && isGlobalReceiver(node.expression)) lines.add(lineOf(node));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return [...lines].sort((a, b) => a - b);
+}
+
+function isGlobalReceiver(expr: ts.Expression): boolean {
+  return ts.isIdentifier(expr) && GLOBAL_RECEIVERS.has(expr.text) && !declaredInScope(expr, expr.text);
+}
+
+/** An identifier `fetch` used as a value that resolves to no binding in scope, so to the global. */
+function isGlobalValueReference(id: ts.Identifier): boolean {
+  const parent = id.parent;
+  // A name, not a use: x.fetch, { fetch: v }, fetch() {}, interface/class members, declarations, labels, import/export names.
+  if (ts.isPropertyAccessExpression(parent) && parent.name === id) return false;
+  if (ts.isQualifiedName(parent) && parent.right === id) return false;
+  if ((ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertySignature(parent) || ts.isMethodDeclaration(parent)
+    || ts.isMethodSignature(parent) || ts.isGetAccessorDeclaration(parent) || ts.isSetAccessorDeclaration(parent) || ts.isEnumMember(parent)
+    || ts.isPropertyAccessChain(parent)) && parent.name === id) return false;
+  if ((ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isFunctionDeclaration(parent) || ts.isFunctionExpression(parent)
+    || ts.isClassDeclaration(parent) || ts.isClassExpression(parent) || ts.isBindingElement(parent)) && parent.name === id) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === id) return false;
+  if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent)) return false;
+  if (ts.isLabeledStatement(parent) || ts.isBreakOrContinueStatement(parent)) return false;
+  return !declaredInScope(id, "fetch");
+}
+
+/** Whether a binding of `name` is declared in a scope enclosing `node` (parameters, var/let/const, functions, classes, imports). */
+function declaredInScope(node: ts.Node, name: string): boolean {
+  const binds = (n: ts.BindingName): boolean => ts.isIdentifier(n) ? n.text === name
+    : n.elements.some((e) => !ts.isOmittedExpression(e) && binds(e.name));
+  const declaresIn = (statements: ts.NodeArray<ts.Statement>): boolean => statements.some((st) =>
+    (ts.isVariableStatement(st) && st.declarationList.declarations.some((d) => binds(d.name)))
+    || ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st) || ts.isEnumDeclaration(st)) && st.name?.text === name)
+    || (ts.isImportDeclaration(st) && importBinds(st, name)));
+  for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
+    if (ts.isFunctionLike(at) && at.parameters.some((p) => binds(p.name))) return true;
+    if ((ts.isFunctionExpression(at) || ts.isClassExpression(at)) && at.name?.text === name) return true;
+    if ((ts.isBlock(at) || ts.isSourceFile(at) || ts.isModuleBlock(at) || ts.isCaseClause(at) || ts.isDefaultClause(at)) && declaresIn(at.statements)) return true;
+    if ((ts.isForStatement(at) || ts.isForInStatement(at) || ts.isForOfStatement(at)) && at.initializer && ts.isVariableDeclarationList(at.initializer)
+      && at.initializer.declarations.some((d) => binds(d.name))) return true;
+    if (ts.isCatchClause(at) && at.variableDeclaration && binds(at.variableDeclaration.name)) return true;
+  }
+  return false;
+}
+
+function importBinds(decl: ts.ImportDeclaration, name: string): boolean {
+  const clause = decl.importClause;
+  if (!clause) return false;
+  if (clause.name?.text === name) return true;
+  const nb = clause.namedBindings;
+  if (!nb) return false;
+  return ts.isNamespaceImport(nb) ? nb.name.text === name : nb.elements.some((e) => e.name.text === name);
+}
+
 /** Infrastructure modules the domain may not import, by the name the scan normalises a specifier to. */
 export const INFRASTRUCTURE_MODULES: ReadonlySet<string> = new Set([
   "better-sqlite3", "node:fs", "node:fs/promises", "node:child_process", "node:net", "node:http", "node:os",
 ]);
 
-export type BoundaryRule = "domain-imports-adapter" | "domain-imports-db" | "domain-imports-infrastructure";
+export type BoundaryRule = "domain-imports-adapter" | "domain-imports-db" | "domain-imports-infrastructure" | "domain-uses-global-fetch";
+
+/** workspaces-o9o.183: the target a domain file's use of the global fetch is recorded under. HTTP from the domain is I/O with no
+ *  import to show it, so the import scan alone let it pass; this pseudo-target puts it in the same shrink-only baseline. */
+export const GLOBAL_FETCH = "global:fetch";
+
+/** The receivers through which the global fetch is reached by name: `globalThis.fetch` and its aliases. */
+const GLOBAL_RECEIVERS: ReadonlySet<string> = new Set(["globalThis", "global", "self", "window"]);
 
 /** `fs` and `node:fs` are one module; a subpath of better-sqlite3 is better-sqlite3. */
 export function normaliseBareSpecifier(spec: string): string {
@@ -123,6 +202,11 @@ export function violationsInSource(file: string, source: string): { violations: 
     existing.lines.push(edge.line);
     if (!existing.forms.includes(edge.form)) existing.forms.push(edge.form);
     byKey.set(violationKey(v), existing);
+  }
+  const fetchLines = scanGlobalFetch(file, source);
+  if (fetchLines.length > 0) {
+    const v: Violation = { file, target: GLOBAL_FETCH, kind: "value", rule: "domain-uses-global-fetch", lines: fetchLines, forms: ["global-reference"] };
+    byKey.set(violationKey(v), v);
   }
   return { violations: [...byKey.values()], unresolved };
 }
@@ -237,13 +321,18 @@ const RULE_TEXT: Record<BoundaryRule, string> = {
   "domain-imports-adapter": "the domain imports an adapter (src/adapters)",
   "domain-imports-db": "the domain imports src/db",
   "domain-imports-infrastructure": "the domain imports an infrastructure module",
+  "domain-uses-global-fetch": "the domain does HTTP through the global fetch",
 };
 
 export function describeComparison(c: Comparison): string {
   const out: string[] = [];
   if (c.added.length > 0) {
     out.push(`${c.added.length} NEW hexagonal-boundary violation(s) (rule: ${RULE_DOC}):`);
-    for (const v of c.added) out.push(`  packages/daemon/${v.file}:${v.lines.join(",")} imports ${v.target} (${v.kind}${v.kind === "type" ? "-only" : ""}; ${v.forms.join(", ")}) - ${RULE_TEXT[v.rule]}`);
+    for (const v of c.added) {
+      out.push(v.target === GLOBAL_FETCH
+        ? `  packages/daemon/${v.file}:${v.lines.join(",")} uses the global fetch - ${RULE_TEXT[v.rule]}`
+        : `  packages/daemon/${v.file}:${v.lines.join(",")} imports ${v.target} (${v.kind}${v.kind === "type" ? "-only" : ""}; ${v.forms.join(", ")}) - ${RULE_TEXT[v.rule]}`);
+    }
     out.push(
       "  To fix one you wrote: declare what the domain needs as a port (an interface or type) in src/domain, implement it in",
       "  src/adapters, and wire the adapter in src/startup.ts; a domain service takes the port in its constructor. Do not add",

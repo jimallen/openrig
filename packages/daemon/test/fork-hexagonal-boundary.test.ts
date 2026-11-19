@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BASELINE_PATH, DAEMON_ROOT, DOMAIN_DIR, RULE_DOC, SYNC_COMMAND, attributeToUpstream, classifyEdge, compareToBaseline, describeComparison, formatBaseline,
-  parseBaseline, planSync, scanDomain, scanImports, violationKey, violationsInSource, type BaselineEntry, type Violation,
+  BASELINE_PATH, DAEMON_ROOT, DOMAIN_DIR, GLOBAL_FETCH, RULE_DOC, SYNC_COMMAND, attributeToUpstream, classifyEdge, compareToBaseline, describeComparison,
+  formatBaseline, parseBaseline, planSync, scanDomain, scanGlobalFetch, scanImports, violationKey, violationsInSource, type BaselineEntry, type Violation,
 } from "./helpers/fork-hexagonal-boundary.js";
 
 const scan = scanDomain();
@@ -89,6 +89,7 @@ describe("hexagonal boundary census: the ratchet against the baseline", () => {
   it("every baseline line names a domain file and a target the rule forbids", () => {
     for (const e of baseline) {
       expect(e.file.startsWith("src/domain/"), e.file).toBe(true);
+      if (e.target === GLOBAL_FETCH) { expect(e.kind, `${e.file} ${e.target}`).toBe("value"); continue; }
       expect(classifyEdge(e.file, e.target.startsWith("src/") ? relativeFrom(e.file, e.target) : e.target), `${e.file} ${e.target}`).not.toBeNull();
     }
   });
@@ -325,3 +326,70 @@ function relativeFrom(file: string, target: string): string {
   const up = file.split("/").length - 2;
   return `${"../".repeat(up)}${target.slice("src/".length)}`;
 }
+
+// workspaces-o9o.183: HTTP from the domain has no import to show it, so the import scan let a global fetch call pass. The scan now
+// records each domain file that reaches the global fetch as a value under the pseudo-target global:fetch, in the same baseline.
+describe("the global fetch: HTTP from the domain is a violation like an infrastructure import", () => {
+  const fetchLines = (source: string) => scanGlobalFetch("src/domain/x.ts", source);
+
+  it("positive control: the domain's one remaining global fetch (remote-daemon-http, o9o.161) is found where it is", () => {
+    const v = scan.violations.find((x) => x.file === "src/domain/hosts/remote-daemon-http.ts" && x.target === GLOBAL_FETCH);
+    expect(v?.kind).toBe("value");
+    expect(v?.rule).toBe("domain-uses-global-fetch");
+    expect(scan.violations.filter((x) => x.target === GLOBAL_FETCH).map((x) => x.file)).toEqual(["src/domain/hosts/remote-daemon-http.ts"]);
+  });
+
+  it("counts a call, passing or storing the global, a shorthand property, and globalThis/global/self/window access", () => {
+    expect(fetchLines(`export async function f(u: string) { return fetch(u); }`)).toEqual([1]);
+    expect(fetchLines(`const opts: { fetchImpl?: typeof fetch } = {};\nconst f = opts.fetchImpl ?? fetch;`)).toEqual([2]);
+    expect(fetchLines(`export const deps = { fetch };`)).toEqual([1]);
+    expect(fetchLines(`const a = globalThis.fetch;\nconst b = global.fetch;\nconst c = self.fetch;\nconst d = window.fetch;\nconst e = globalThis["fetch"];`)).toEqual([1, 2, 3, 4, 5]);
+    expect(fetchLines(`export class C { private readonly http = fetch; }`)).toEqual([1]);
+    expect(fetchLines(`export const f = (u: string) => fetch(u, { method: "GET" }).then((r) => r.ok);`)).toEqual([1]);
+  });
+
+  it("does not count a type position, a property named fetch, a string, a comment, or a fetch bound in scope", () => {
+    expect(fetchLines([
+      `export type Http = typeof fetch;`,
+      `export interface Deps { fetch: (u: string) => Promise<Response>; fetchImpl?: typeof fetch }`,
+      `export async function g(deps: Deps) { return deps.fetch("u"); }`,
+      `export const o = { fetch: (u: string) => u };`,
+      `export class K { fetch(u: string) { return u; } }`,
+      `// fetch("http://example.invalid") in a comment`,
+      `export const s = "fetch(url)";`,
+      `export const t = \`\${"fetch"}\`;`,
+    ].join("\n"))).toEqual([]);
+    expect(fetchLines(`export function h(fetch: (u: string) => Promise<unknown>) { return fetch("u"); }`)).toEqual([]);
+    expect(fetchLines(`export function h2({ fetch }: { fetch: (u: string) => Promise<unknown> }) { return fetch("u"); }`)).toEqual([]);
+    expect(fetchLines(`const fetch = (u: string) => u;\nexport const r = fetch("u");`)).toEqual([]);
+    expect(fetchLines(`import { fetch } from "./http.js";\nexport const r = fetch("u");`)).toEqual([]);
+    expect(fetchLines(`function fetch(u: string) { return u; }\nexport const r = fetch("u");`)).toEqual([]);
+    expect(fetchLines(`export function m() { const globalThis = { fetch: (u: string) => u }; return globalThis.fetch("u"); }`)).toEqual([]);
+  });
+
+  it("a binding in one scope does not hide the global in a sibling scope", () => {
+    expect(fetchLines([
+      `export function a(fetch: (u: string) => unknown) { return fetch("u"); }`,
+      `export function b() { return fetch("u"); }`,
+    ].join("\n"))).toEqual([2]);
+  });
+
+  it("is one value violation per file, with every line, and a new one fails naming the fetch and how to fix it", () => {
+    const { violations } = violationsInSource("src/domain/a.ts", `export const x = fetch;\nexport const y = () => fetch("u");`);
+    expect(violations.map((v) => `${violationKey(v)} @${v.lines.join(",")}`)).toEqual(["src/domain/a.ts global:fetch value @1,2"]);
+    const message = describeComparison(compareToBaseline(violations, []));
+    expect(message).toContain("packages/daemon/src/domain/a.ts:1,2 uses the global fetch - the domain does HTTP through the global fetch");
+    expect(message).toContain("declare what the domain needs as a port");
+    // Recorded, it passes; gone, its line is stale (the baseline only shrinks).
+    const recorded = [{ file: "src/domain/a.ts", target: GLOBAL_FETCH, kind: "value" as const, origin: "fork" as const, lineNo: 9 }];
+    expect(describeComparison(compareToBaseline(violations, recorded))).toBe("");
+    expect(compareToBaseline([], recorded).stale.map(violationKey)).toEqual(["src/domain/a.ts global:fetch value"]);
+  });
+
+  it("the read-through's domain half imports no HTTP framework (o9o.183: the hono middleware moved to src/middleware)", () => {
+    const source = readFileSync(path.join(DAEMON_ROOT, "src/domain/hosts/read-through.ts"), "utf8");
+    const specifiers = scanImports("src/domain/hosts/read-through.ts", source).edges.map((e) => e.specifier);
+    expect(specifiers.length).toBeGreaterThan(0);
+    expect(specifiers.filter((s) => s === "hono" || s.startsWith("hono/"))).toEqual([]);
+  });
+});
