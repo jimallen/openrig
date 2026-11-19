@@ -34,7 +34,9 @@ export type CredentialFileProblem =
   | "group_or_other_write" | "too_large" | "unreadable";
 
 export type CredentialFileRead =
-  | { ok: true; content: string }
+  /** `mode`: the permission bits of the file judged and read, from its own descriptor (o9o.182, verify-sec2: the write half keeps it;
+   *  re-stating the path instead would read a link swapped in after the read). Set by the procedure; a test double may leave it out. */
+  | { ok: true; content: string; mode?: number }
   | { ok: false; problem: CredentialFileProblem; message: string };
 
 /** The outbound port: read one credential file under a policy, or judge it without reading it. Never throws for a file problem;
@@ -250,7 +252,8 @@ export function readCredentialFileWith(ops: CredentialFileOps, path: string, pol
   let fd: number;
   try { fd = ops.openNoFollow(resolved.target); } catch (err) { return refusal(path, policy, openProblem(err)); }
   try {
-    const problem = judgeOpenedCredentialFile(ops.fstat(fd), policy, ops.currentUid());
+    const facts = ops.fstat(fd);
+    const problem = judgeOpenedCredentialFile(facts, policy, ops.currentUid());
     if (problem) return refusal(path, policy, problem);
     const buf = new Uint8Array(policy.maxBytes + 1);
     let n = 0;
@@ -261,7 +264,7 @@ export function readCredentialFileWith(ops: CredentialFileOps, path: string, pol
       if (n > policy.maxBytes) return refusal(path, policy, "too_large");
     }
     const content = new TextDecoder().decode(buf.subarray(0, n));
-    return { ok: true, content };
+    return { ok: true, content, mode: facts.mode & 0o7777 };
   } catch {
     return refusal(path, policy, "unreadable");
   } finally {
@@ -415,7 +418,9 @@ export function rewriteGuardedFileWith(
     const read = readCredentialFileWith(ops, target, judged);
     if (!read.ok) return relabel(read);
     current = read.content;
-    mode = (ops.lstatMode(target)?.mode ?? before.mode) & 0o7777;
+    // The mode of the file judged and read, from its own descriptor: the path is never asked again (verify-sec2, o9o.182: a link swapped
+    // in after the read made a re-stat of the path publish the replacement at the link's 0777).
+    mode = (read.mode ?? before.mode) & 0o7777;
   }
   const next = mutate(current);
   if (next === null || (next === current && !options.rewriteUnchanged)) return { ok: true, written: false, path: target };

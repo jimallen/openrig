@@ -73,3 +73,30 @@ describe("rig auth command surface (OPR.0.4.1.29)", () => {
     expect(code).toBe(1);
   });
 });
+
+// verify-sec2 (o9o.182 FAIL 2): a seat registry the credential rule refuses must say which file and the fix, not a bare unsafe_path,
+// and `seats list` must not turn the refusal into an empty list.
+describe("rig auth seats: a refused registry is named with its fix (workspaces-o9o.182)", () => {
+  const linkedRegistry = () => {
+    const elsewhere = path.join(home, "planted.tsv");
+    fs.writeFileSync(elsewhere, "seat\trig\truntime\tcwd\tauth_profile\tupdated_ts\n", { mode: 0o600 });
+    const registry = path.join(home, "auth-seat-registry.tsv");
+    fs.symlinkSync(elsewhere, registry);
+    return registry;
+  };
+  it("seats set on a symlinked registry fails naming the file and why", async () => {
+    const registry = linkedRegistry();
+    const { out, code } = await run(["seats", "set", "--seat", "dev1@rig", "--rig", "rig", "--profile", "work"]);
+    expect(code).toBe(1);
+    expect(out).toContain("unsafe_path");
+    expect(out).toContain(registry);
+    expect(out).toMatch(/symbolic link/);
+  });
+  it("seats list on a symlinked registry fails naming the file and why, instead of listing nothing", async () => {
+    const registry = linkedRegistry();
+    const { out, code } = await run(["seats", "list"]);
+    expect(code).toBe(1);
+    expect(out).toContain(registry);
+    expect(out).toMatch(/symbolic link/);
+  });
+});

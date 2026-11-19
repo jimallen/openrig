@@ -152,6 +152,26 @@ describe("the Codex seat home: hook-trust mirror, identity scans and the profile
     expect(home.warnings.join("\n")).toMatch(/did not copy profile rig-yolo\.config\.toml: .*chmod go-w/);
   });
 
+  // verify-sec2 (o9o.182 FAIL 3): a linked or non-regular shared profile was skipped by lstat BEFORE the policy ran, so it was silently
+  // omitted. It is refused by name through the policy now.
+  it("a shared profile that is a symbolic link is not copied, and the refusal names it", async () => {
+    fs.writeFileSync(config, ORIGINAL, { mode: 0o600 });
+    const real = path.join(tmp, "elsewhere.config.toml");
+    fs.writeFileSync(real, 'approval_policy = "never"\n', { mode: 0o600 });
+    fs.symlinkSync(real, path.join(codexHome, "rig-yolo.config.toml"));
+    const home = await launch();
+    expect(home.copiedProfiles).toEqual([]);
+    expect(home.warnings.join("\n")).toMatch(/did not copy profile rig-yolo\.config\.toml: .*symbolic link/);
+  });
+
+  it("a shared profile name that is not a regular file (a directory) is not copied, and the refusal names it", async () => {
+    fs.writeFileSync(config, ORIGINAL, { mode: 0o600 });
+    fs.mkdirSync(path.join(codexHome, "odd.config.toml"));
+    const home = await launch();
+    expect(home.copiedProfiles).toEqual([]);
+    expect(home.warnings.join("\n")).toMatch(/did not copy profile odd\.config\.toml: .*not a regular file/);
+  });
+
   it("a shared profile is copied 0600 whatever the source's mode, and is the source's text", async () => {
     fs.writeFileSync(config, ORIGINAL, { mode: 0o600 });
     const profile = path.join(codexHome, "rig-yolo.config.toml");

@@ -552,8 +552,8 @@ export async function ensureCodexSeatHome(
   for (const entry of entries) {
     if (!entry.endsWith(".config.toml")) continue;
     const source = path.join(shared, entry);
-    const stat = await fs.lstat(source).catch(() => null);
-    if (!stat?.isFile()) continue;
+    // workspaces-o9o.182 (verify-sec2): no lstat pre-filter. A shared profile that is a link or not a regular file is refused BY NAME
+    // through the policy below (the read refuses it and says why), never silently left out.
     const dest = path.join(home, entry);
     const existing = await fs.lstat(dest).catch(() => null);
     if (existing) {

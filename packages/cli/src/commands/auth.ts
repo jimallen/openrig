@@ -11,7 +11,7 @@ import {
   authSwitch,
   authValidate,
   authSeatSet,
-  authSeatsList,
+  authSeatsListResult,
   authSeatShow,
   authSeatsReport,
   SEAT_REGISTRY_DISCLAIMER,
@@ -113,7 +113,9 @@ export function authCommand(depsOverride?: AuthCommandDeps): Command {
     .description("List seat -> profile mappings.")
     .action((opts: { runtime: string }) => {
       if (!ensureRuntime(opts.runtime)) return;
-      for (const row of authSeatsList(paths())) console.log(`${row.seat}\t${row.authProfile}\t${row.updatedTs}`);
+      const listed = authSeatsListResult(paths());
+      if (!listed.ok) return fail(`${listed.reason}: ${listed.detail}`);
+      for (const row of listed.rows) console.log(`${row.seat}\t${row.authProfile}\t${row.updatedTs}`);
       console.log(`# ${SEAT_REGISTRY_DISCLAIMER}`);
     });
 
@@ -122,7 +124,7 @@ export function authCommand(depsOverride?: AuthCommandDeps): Command {
     .action((seat: string, opts: { runtime: string }) => {
       if (!ensureRuntime(opts.runtime)) return;
       const r = authSeatShow(paths(), seat);
-      if (!r.ok) return fail(r.reason);
+      if (!r.ok) return fail(r.detail ? `${r.reason}: ${r.detail}` : r.reason);
       console.log(`seat: ${r.row.seat}`);
       console.log(`rig: ${r.row.rig}`);
       console.log(`runtime: ${r.row.runtime}`);
@@ -145,7 +147,7 @@ export function authCommand(depsOverride?: AuthCommandDeps): Command {
         { seat: opts.seat ?? "", rig: opts.rig ?? "", runtime: "codex", cwd: opts.cwd, authProfile: opts.profile },
         depsOverride?.now,
       );
-      if (!r.ok) return fail(r.reason);
+      if (!r.ok) return fail(r.detail ? `${r.reason}: ${r.detail}` : r.reason);
       console.log(`seat_upserted: ${r.seat}`);
       console.log(`registry_path: ${r.registryPath}`);
       console.log(`registry_mode: ${r.mode}`);
@@ -160,6 +162,7 @@ export function authCommand(depsOverride?: AuthCommandDeps): Command {
       console.log(`registry_present: ${r.registryPresent ? "yes" : "no"}`);
       console.log(`registry_mode: ${r.registryMode ?? "n/a"}`);
       console.log(`registry_mode_safe: ${r.registryModeSafe}`);
+      if (r.refused) console.log(`registry_refused: ${r.refused}`);
       console.log(`total_seats: ${r.total}`);
       console.log(`known_profiles: ${r.known}`);
       console.log(`unknown_profiles: ${r.unknown}`);

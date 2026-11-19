@@ -87,6 +87,24 @@ describe("rewriteGuardedFile (workspaces-o9o.182)", () => {
     expect(fs.readFileSync(file, "utf-8")).toBe("a\n");
   });
 
+  // verify-sec2 (o9o.182 FAIL 1): the new file's mode was taken by re-stating the PATH after the checked read, so a symlink swapped in
+  // between published the replacement at the link's 0777. The mode comes from the judged descriptor now; the path is never asked again.
+  it("the new file keeps the judged file's mode even when a link is swapped in at the path after the read (fd, not path)", () => {
+    const file = path.join(tmp, "settings.json");
+    fs.writeFileSync(file, "{}\n");
+    fs.chmodSync(file, 0o640);
+    const real = guardedFileOpsFrom(fs, () => process.getuid?.() ?? 0, () => "s1", () => 9);
+    let reads = 0;
+    const ops = {
+      ...real,
+      read: (fd: number, buf: Uint8Array, offset: number, length: number) => { reads++; return real.read(fd, buf, offset, length); },
+      // After the content has been read, the path answers as a symbolic link (lrwxrwxrwx), as a swap would make it.
+      lstatMode: (p: string) => (reads > 0 && p === file ? { mode: 0o120777, isSymbolicLink: true } : real.lstatMode(p)),
+    };
+    expect(rewriteGuardedFileWith(ops, file, CLAUDE_SETTINGS_POLICY, append("x"))).toMatchObject({ ok: true, written: true });
+    expect(fs.statSync(file).mode & 0o7777).toBe(0o640);
+  });
+
   it("a file of another owner is refused (the owner seam)", () => {
     const file = path.join(tmp, "f.toml");
     fs.writeFileSync(file, "a\n", { mode: 0o600 });

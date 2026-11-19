@@ -415,22 +415,19 @@ export interface SeatSetFields {
   authProfile?: string;
 }
 
-function isSafeRegistryFile(p: string): boolean {
-  const st = lstatSafe(p);
-  return st !== null && !st.isSymbolicLink() && st.isFile();
-}
-
 /** Reject empty + any control character (covers tab/newline/CR, which would corrupt the TSV). */
 function validRegistryField(v: string): boolean {
   return v.length > 0 && !hasControlChar(v);
 }
 
 /** workspaces-o9o.182 (CoS 11-19 00:48Z): the seat registry names the auth profile each seat uses, so it is read under the credential
- *  rule for a secret OpenRig owns (CODEX_SEAT_REGISTRY_POLICY): a link, another user's file or an oversized one has no rows, and a file
- *  of ours others could read is narrowed to 0600 first. */
-function rawRegistryLines(registryPath: string): string[] {
+ *  rule for a secret OpenRig owns (CODEX_SEAT_REGISTRY_POLICY): a link, another user's file or an oversized one is refused, and a file of
+ *  ours others could read is narrowed to 0600 first. Returns the registry's lines, or the refusal naming the file and the fix
+ *  (verify-sec2: a refusal is said, never read as an empty registry). A registry that does not exist yet is empty. */
+function readSeatRegistry(registryPath: string): { ok: true; lines: string[] } | { ok: false; detail: string } {
   const read = readOwnFile(registryPath, CODEX_SEAT_REGISTRY_POLICY);
-  return read.ok ? registryLinesOf(read.content) : [];
+  if (read.ok) return { ok: true, lines: registryLinesOf(read.content) };
+  return read.problem === "missing" ? { ok: true, lines: [] } : { ok: false, detail: read.message };
 }
 
 function registryLinesOf(text: string): string[] {
@@ -468,7 +465,7 @@ function parseRow(line: string): SeatRow {
 
 export type SeatSetResult =
   | { ok: true; seat: string; registryPath: string; mode: string; disclaimer: string }
-  | { ok: false; reason: "invalid_seat" | "invalid_rig" | "invalid_runtime" | "invalid_cwd" | "invalid_profile" | "unsafe_path" | "io_error" };
+  | { ok: false; reason: "invalid_seat" | "invalid_rig" | "invalid_runtime" | "invalid_cwd" | "invalid_profile" | "unsafe_path" | "io_error"; detail?: string };
 
 /** Atomic upsert of a seat metadata row (tmp + rename). Drops pre-existing malformed rows rather than
  *  re-emitting fabricated metadata. `now` is injectable for deterministic tests. */
@@ -485,9 +482,7 @@ export function authSeatSet(
   const profile = fields.authProfile && fields.authProfile.length > 0 ? fields.authProfile : "unknown";
   if (profile !== "unknown" && !validateProfileName(profile)) return { ok: false, reason: "invalid_profile" };
 
-  if (lstatSafe(paths.registryPath) !== null && !isSafeRegistryFile(paths.registryPath)) {
-    return { ok: false, reason: "unsafe_path" };
-  }
+  // o9o.182 (verify-sec2): no lstat pre-check of its own; the credential rule's refusal below names the file and the fix.
   const newRow = [fields.seat, fields.rig, "codex", cwd, profile, now()].join("\t");
   // workspaces-o9o.182: judged (a link, another user's file or a second name refused; ours narrowed to 0600), read, changed and written
   // 0600 as a fresh file renamed into place: never through a link at the registry or at a temp name.
@@ -499,28 +494,34 @@ export function authSeatSet(
         .filter((l) => l.split("\t")[0] !== fields.seat);
       return [SEAT_HEADER, ...kept, newRow].join("\n") + "\n";
     }, { own: true, createMode: 0o600 });
-    if (!written.ok) return { ok: false, reason: "unsafe_path" };
+    if (!written.ok) return { ok: false, reason: "unsafe_path", detail: written.message };
   } catch {
     return { ok: false, reason: "io_error" };
   }
   return { ok: true, seat: fields.seat, registryPath: paths.registryPath, mode: "600", disclaimer: SEAT_REGISTRY_DISCLAIMER };
 }
 
-/** List well-formed seat rows (malformed rows skipped). */
+/** List well-formed seat rows (malformed rows skipped). A registry the credential rule refuses lists nothing; use authSeatsListResult to
+ *  be told why. */
 export function authSeatsList(paths: CodexAuthPaths): SeatRow[] {
-  return rawRegistryLines(paths.registryPath)
-    .filter((l) => !rowMalformed(l))
-    .map(parseRow);
+  const r = authSeatsListResult(paths);
+  return r.ok ? r.rows : [];
 }
 
-export type SeatShowResult = { ok: true; row: SeatRow } | { ok: false; reason: "invalid_seat" | "missing_seat" | "unsafe_path" };
+/** The well-formed seat rows, or the refusal naming the registry and the fix (o9o.182, verify-sec2: never an empty list for a refusal). */
+export function authSeatsListResult(paths: CodexAuthPaths): { ok: true; rows: SeatRow[] } | { ok: false; reason: "unsafe_path"; detail: string } {
+  const read = readSeatRegistry(paths.registryPath);
+  if (!read.ok) return { ok: false, reason: "unsafe_path", detail: read.detail };
+  return { ok: true, rows: read.lines.filter((l) => !rowMalformed(l)).map(parseRow) };
+}
+
+export type SeatShowResult = { ok: true; row: SeatRow } | { ok: false; reason: "invalid_seat" | "missing_seat" | "unsafe_path"; detail?: string };
 
 export function authSeatShow(paths: CodexAuthPaths, seat: string): SeatShowResult {
   if (!validRegistryField(seat)) return { ok: false, reason: "invalid_seat" };
-  if (lstatSafe(paths.registryPath) !== null && !isSafeRegistryFile(paths.registryPath)) {
-    return { ok: false, reason: "unsafe_path" };
-  }
-  const row = authSeatsList(paths).find((r) => r.seat === seat);
+  const listed = authSeatsListResult(paths);
+  if (!listed.ok) return listed;
+  const row = listed.rows.find((r) => r.seat === seat);
   return row ? { ok: true, row } : { ok: false, reason: "missing_seat" };
 }
 
@@ -532,6 +533,8 @@ export interface SeatsReport {
   known: number;
   unknown: number;
   malformed: number;
+  /** o9o.182: why the credential rule refused the registry (its counts are then zero); absent when it was read. */
+  refused?: string;
 }
 
 export function authSeatsReport(paths: CodexAuthPaths): SeatsReport {
@@ -541,7 +544,8 @@ export function authSeatsReport(paths: CodexAuthPaths): SeatsReport {
   let known = 0;
   let unknown = 0;
   let malformed = 0;
-  for (const line of rawRegistryLines(paths.registryPath)) {
+  const read = readSeatRegistry(paths.registryPath);
+  for (const line of read.ok ? read.lines : []) {
     if (rowMalformed(line)) {
       malformed += 1;
       continue;
@@ -559,5 +563,6 @@ export function authSeatsReport(paths: CodexAuthPaths): SeatsReport {
     known,
     unknown,
     malformed,
+    ...(read.ok ? {} : { refused: read.detail }),
   };
 }
