@@ -31,18 +31,20 @@ describe("workspaces-o9o.185: a test never scans the live host's processes", () 
     counter[LIVE_SCAN]!.pop();  // this row reached it on purpose; the file's own end-of-file check must not count it
   });
 
-  it("a fixture root is read: only numbered entries with OPENRIG_SESSION_NAME, PATH in order and OPENRIG_HOME", () => {
+  it("a fixture root is read: only numbered entries with OPENRIG_SESSION_NAME, PATH in order, OPENRIG_HOME and the command line", () => {
     const procRoot = procTree({
       "101": env("OPENRIG_SESSION_NAME=a@r", "OPENRIG_HOME=/h", "PATH=/x/bin:/usr/bin"),
       "102": env("PATH=/usr/bin"),                 // not a seat
       "103": null,                                 // gone, or another user's: no readable environ
       "self": env("OPENRIG_SESSION_NAME=s@r"),     // not a pid
     });
-    expect(readSeatProcesses({ procRoot })).toEqual([{ pid: 101, session: "a@r", home: "/h", path: ["/x/bin", "/usr/bin"] }]);
+    // workspaces-o9o.173: the command line is read from the same root (an argv the fixture wrote, NUL-separated and NUL-ended).
+    writeFileSync(path.join(procRoot, "101", "cmdline"), "claude\0--settings\0{}\0");
+    expect(readSeatProcesses({ procRoot })).toEqual([{ pid: 101, session: "a@r", home: "/h", path: ["/x/bin", "/usr/bin"], argv: ["claude", "--settings", "{}"] }]);
   });
 
   it("pids reads only the processes named, not the rest of the root", () => {
     const procRoot = procTree({ "201": env("OPENRIG_SESSION_NAME=a@r"), "202": env("OPENRIG_SESSION_NAME=b@r") });
-    expect(readSeatProcesses({ procRoot, pids: [202] })).toEqual([{ pid: 202, session: "b@r", home: null, path: [] }]);
+    expect(readSeatProcesses({ procRoot, pids: [202] })).toEqual([{ pid: 202, session: "b@r", home: null, path: [], argv: [] }]);  // no cmdline in the fixture: argv is empty (o9o.173)
   });
 });
