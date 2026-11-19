@@ -15,7 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { postChatMessage, getUploadURLExternal, uploadBytesExternal, completeUploadExternal, fetchRecentMessageTexts, type FetchImpl } from "./slack-api.js";
+import { postChatMessage, getUploadURLExternal, uploadBytesExternal, completeUploadExternal, fetchRecentMessageTexts, type SlackTransport } from "./slack-api.js";
 import {
   buildOutboundMessage, attributionFromSession, reconcileToken, redactSecrets, splitForSlack,
   HumanMessageShapeError, SLACK_SECTION_CAP, SLACK_TEXT_CAP, type SlackMediaRef,
@@ -41,7 +41,8 @@ export interface SubsystemSlackDeliveryOpts {
   pinChannel?: boolean;
   sourceLabel: string; // host/box/rig — from config, never hardcoded (item 7)
   bodyExcerpt?: number;
-  fetchImpl?: FetchImpl;
+  /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
+  fetchImpl: SlackTransport;
   /** The owning gateway run's stop signal. When the wire stops (restart, disable,
    *  shutdown) a rate-limit wait inside postChatMessage rejects instead of sleeping
    *  on: a stale retry must never post after a replay already owns the decision. */

@@ -187,7 +187,7 @@ in `audit_notes_json` (`domain/scope/scope-approve.ts:292`). The audit browse
   origin or an `OPENRIG_ALLOWED_ORIGINS` entry. A valid bearer token waives
   only the host-name check.
 - **Notification dispatcher** — two adapters
-  (`notification-adapter-ntfy.ts`, `notification-adapter-webhook.ts`) plus
+  (`adapters/notification-adapter-ntfy.ts`, `adapters/notification-adapter-webhook.ts`) plus
   `notification-dispatcher.ts`. `OPENRIG_NOTIFICATIONS_MECHANISM` selects
   `ntfy`, `webhook` or `none`, and the default is `none`
   (`startup.ts:1642`). A dispatcher starts only when
@@ -195,7 +195,7 @@ in `audit_notes_json` (`domain/scope/scope-approve.ts:292`). The audit browse
   target URL passes validation (`:1661`); an unrecognized mechanism with a
   target set throws during daemon startup (`:1656–1659`). The ntfy adapter
   posts to a topic URL that the ntfy phone app subscribes to
-  (`notification-adapter-ntfy.ts:1–6`). Notifications fire when a
+  (`adapters/notification-adapter-ntfy.ts:1–8`). Notifications fire when a
   `human-gate` queue item is created, and also on each completed verb when
   `OPENRIG_NOTIFICATIONS_INCLUDE_VERB_COMPLETION=1` (`startup.ts:1648–1649`);
   each item, trigger and mechanism is sent at most once per daemon run

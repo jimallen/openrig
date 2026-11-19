@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import { SeenStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -31,7 +31,7 @@ const clock = () => new Date("2026-08-27T02:00:00.000Z");
 const ACTIVE_FORMS = ["<@U012AB3CD>", "<!here>", "<!channel>", "<!subteam^S012AB3CD>"];
 const INJECTED = `mentioning <@U012AB3CD> then <!here> then <!channel> then <!subteam^S012AB3CD> end`;
 
-function capture(): { fetchImpl: FetchImpl; bodies: Record<string, unknown>[] } {
+function capture(): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
   const bodies: Record<string, unknown>[] = [];
   return {
     bodies,
@@ -42,7 +42,7 @@ function capture(): { fetchImpl: FetchImpl; bodies: Record<string, unknown>[] } 
   };
 }
 
-function makeDeliver(fetchImpl: FetchImpl, mention?: string) {
+function makeDeliver(fetchImpl: SlackTransport, mention?: string) {
   const fsx = memFs();
   return subsystemSlackDeliver({
     botToken: "xox" + "b-EXAMPLE-fake",

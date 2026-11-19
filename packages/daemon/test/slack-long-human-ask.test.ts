@@ -19,7 +19,7 @@ import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsyst
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: "human-founder@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
 const request = { sourceSession: "author@rig", destinationSession: "human-founder@external", summary: "Approve the rollout plan?", evidenceRef: "/private/retained-proof.md", nudge: false };
@@ -45,7 +45,7 @@ describe("long human asks (#897)", () => {
   });
   const decision = (id: string, payload: Record<string, unknown>): OutboundDecision =>
     ({ kind: "outbound_decision", decisionId: id, op: "post_message", entityBindingRef: request.destinationSession, payload: { ...request, qitemId: `q-${id}`, ...payload } });
-  const recorder = (posts: Post[]): FetchImpl => async (_url, init) => {
+  const recorder = (posts: Post[]): SlackTransport => async (_url, init) => {
     posts.push(JSON.parse(String(init?.body)));
     return reply({ ok: true, ts: `${posts.length}.1` });
   };
@@ -101,7 +101,7 @@ describe("long human asks (#897)", () => {
   it("resumes an interrupted delivery without posting any part twice", async () => {
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       calls++;
       if (calls === 3) throw new Error("synthetic timeout");
@@ -120,7 +120,7 @@ describe("long human asks (#897)", () => {
   it("keeps the same cuts when the mention changes between an interrupted attempt and its retry", async () => {
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       calls++;
       if (calls === 3) throw new Error("synthetic 429");
@@ -164,7 +164,7 @@ describe("long human asks (#897)", () => {
     const body = await briefPastMention("shape");
 
     const posted: Post[] = [];
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const msg = { ...JSON.parse(String(init?.body)), ts: `${posted.length + 1}.1` };
       posted.push(msg);
@@ -189,7 +189,7 @@ describe("long human asks (#897)", () => {
     const body = await briefPastMention("planned");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 1) throw new Error("synthetic timeout before the post landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
@@ -228,7 +228,7 @@ describe("long human asks (#897)", () => {
 
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 1) throw new Error("synthetic timeout before the post landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
@@ -250,7 +250,7 @@ describe("long human asks (#897)", () => {
     const { ask, body } = await askAtLabelLimit("landed");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const msg = { ...JSON.parse(String(init?.body)), ts: `${++calls}.1` };
       posted.push(msg);
@@ -272,7 +272,7 @@ describe("long human asks (#897)", () => {
 
   // #192 channel map: a long ask can post to a mapped channel, so the check for its first message
   // looks there, and each part is reported with the channel it went to.
-  const channelAware = (posted: Array<Post & { channel: string; ts: string }>, scanned: string[], onPost: (n: number) => void = () => {}): FetchImpl => async (url, init) => {
+  const channelAware = (posted: Array<Post & { channel: string; ts: string }>, scanned: string[], onPost: (n: number) => void = () => {}): SlackTransport => async (url, init) => {
     const raw = String(init?.body ?? "");
     const fields = raw.startsWith("{") ? JSON.parse(raw) as Record<string, string> : Object.fromEntries(new URLSearchParams(raw));
     if (!url.endsWith("chat.postMessage")) {
@@ -331,7 +331,7 @@ describe("long human asks (#897)", () => {
     const { ask, body } = await askAtLabelLimit("unverified");
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       // One readable page that says there is more, with no cursor: the scan can't rule the message in or out.
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: [], has_more: true });
       if (++calls === 1) throw new Error("synthetic timeout; the post may or may not have landed");
@@ -354,7 +354,7 @@ describe("long human asks (#897)", () => {
     const ask = decision("partial", { sourceSession: undefined, body: "a".repeat(4000), summary: nearLimitSummary });
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 2) throw new Error("synthetic timeout before the reply landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };
@@ -402,7 +402,7 @@ describe("long human asks (#897)", () => {
     // The first message landed in the thread but its response was lost: the retry finds it there and reports it.
     const landed: Post[] = [];
     let calls = 0;
-    const lostResponse: FetchImpl = async (url, init) => {
+    const lostResponse: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: landed });
       const msg = { ...JSON.parse(String(init?.body)), ts: `${++calls}.1` };
       landed.push(msg);
@@ -426,7 +426,7 @@ describe("long human asks (#897)", () => {
     const ask = decision("rest", { sourceSession: undefined, body: brief, summary: nearLimitSummary });
     const posted: Post[] = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       if (++calls === 2) throw new Error("synthetic timeout before the reply landed");
       const msg = { ...JSON.parse(String(init?.body)), ts: `${calls}.1` };

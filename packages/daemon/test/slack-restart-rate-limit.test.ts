@@ -21,7 +21,7 @@ import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsyst
 import { makeQueuePorts } from "../src/domain/gateway/slack/queue-access.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: "human-founder@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
 const request = { sourceSession: "author@rig", destinationSession: "human-founder@external", summary: "Restart race?", body: "One decision that must post exactly once across a restart inside its rate-limit wait.", nudge: false };
@@ -48,7 +48,7 @@ describe("restart inside the rate-limit wait", () => {
     let wire1Posts = 0;
     let wire2Posts = 0;
     let okPosts = 0;
-    const fetch1: FetchImpl = async (url) => {
+    const fetch1: SlackTransport = async (url) => {
       if (!isPost(url)) return reply({ ok: true, messages: [] });
       wire1Posts += 1;
       if (wire1Posts === 1) {
@@ -57,7 +57,7 @@ describe("restart inside the rate-limit wait", () => {
       okPosts += 1; // the stale run's retry — the double post this test forbids
       return reply({ ok: true, ts: "stale.1" });
     };
-    const fetch2: FetchImpl = async (url) => {
+    const fetch2: SlackTransport = async (url) => {
       if (!isPost(url)) return reply({ ok: true, messages: [] }); // reconcile scan: no marker yet
       wire2Posts += 1;
       okPosts += 1;

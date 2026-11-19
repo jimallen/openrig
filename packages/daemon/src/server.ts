@@ -83,7 +83,7 @@ import { skillsRoutes } from "./routes/skills.js";
 import type { SkillLibraryDiscoveryService } from "./domain/skill-library-discovery.js";
 import { configRoutes } from "./routes/config.js";
 import { hostsRoutes } from "./routes/hosts.js";
-import { hostReadThrough } from "./domain/hosts/read-through.js";
+import { hostReadThrough } from "./middleware/host-read-through.js";
 import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
 import { contextRemoteDaemonClient } from "./adapters/remote-daemon-http.js";
 import { jsonBodyErrorHandler, trackJsonBodyParseErrors } from "./middleware/json-body-error.js";

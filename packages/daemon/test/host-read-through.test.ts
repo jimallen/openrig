@@ -14,10 +14,10 @@ import { Hono } from "hono";
 import {
   READ_THROUGH_ALLOWLIST,
   READ_THROUGH_TIMEOUT_MS,
-  hostReadThrough,
   isReadThroughPath,
 } from "../src/domain/hosts/read-through.js";
 import { remoteRawRequest, contextRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
+import { hostReadThrough } from "../src/middleware/host-read-through.js";
 import type { HostRegistry, HttpHostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 
 const REGISTRY: HostRegistry = {

@@ -12,9 +12,10 @@
 // reads exactly that header. Channel membership is likewise verified live
 // (conversations.info.is_member) before declaring inbound ready.
 
-export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
-
-const defaultFetch: FetchImpl = (url, init) => fetch(url, init);
+/** The domain's port for HTTP to Slack (workspaces-o9o.183): every Slack call here goes through the transport its caller hands
+ *  in; the domain holds no default. The production transport is src/adapters/slack-http-transport.ts, wired in startup.ts, the
+ *  gateway routes and the CLI (through the gateway-slack surface); tests hand in a fake. */
+export type SlackTransport = (url: string, init?: RequestInit) => Promise<Response>;
 const DEFAULT_TIMEOUT_MS = 15000;
 
 export interface HttpResult {
@@ -45,7 +46,7 @@ async function withTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => P
 export async function postWebhook(
   url: string,
   payload: unknown,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<HttpResult> {
   try {
@@ -92,7 +93,7 @@ export async function callWebApi(
   method: string,
   token: string,
   body: Record<string, unknown>,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   shape: WebApiRequestShape = "json-post",
 ): Promise<WebApiResult> {
@@ -154,7 +155,7 @@ export async function callWebApi(
 /** Item 5: read the ACTUAL granted scopes from the response header (configured != granted). */
 export async function getGrantedScopes(
   token: string,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; granted: string[]; error?: string }> {
   const r = await callWebApi("auth.test", token, {}, fetchImpl, timeoutMs);
@@ -186,7 +187,7 @@ export function isSlackHost(url: string): boolean {
 export async function downloadPrivateFile(
   url: string,
   token: string,
-  fetchImpl: FetchImpl = fetch,
+  fetchImpl: SlackTransport,
   timeoutMs = 30_000,
   maxBytes = INBOUND_FILE_MAX_BYTES,
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
@@ -248,7 +249,7 @@ export interface ScopeVerdict {
 export async function verifyScopes(
   token: string,
   required: string[],
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<ScopeVerdict> {
   const g = await getGrantedScopes(token, fetchImpl, timeoutMs);
@@ -262,7 +263,7 @@ export async function verifyScopes(
 export async function verifyChannelMembership(
   token: string,
   channel: string,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; isMember: boolean; name?: string; error?: string }> {
   const r = await callWebApi("conversations.info", token, { channel }, fetchImpl, timeoutMs, "get-query");
@@ -274,7 +275,7 @@ export async function verifyChannelMembership(
 /** Inbound Socket Mode: open a WebSocket URL via apps.connections.open (app-level xapp token). */
 export async function openSocketConnection(
   appToken: string,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; url?: string; error?: string }> {
   const r = await callWebApi("apps.connections.open", appToken, {}, fetchImpl, timeoutMs);
@@ -293,7 +294,7 @@ export async function getUploadURLExternal(
   token: string,
   filename: string,
   length: number,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; uploadUrl?: string; fileId?: string; error?: string }> {
   const r = await callWebApi("files.getUploadURLExternal", token, { filename, length }, fetchImpl, timeoutMs, "form-post");
@@ -306,7 +307,7 @@ export async function getUploadURLExternal(
 export async function uploadBytesExternal(
   uploadUrl: string,
   bytes: Uint8Array,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS + Math.ceil(bytes.length / 524_288) * 1000,
 ): Promise<HttpResult> {
   try {
@@ -328,7 +329,7 @@ export async function uploadBytesExternal(
 export async function completeUploadExternal(
   token: string,
   input: { files: { id: string; title?: string }[]; channelId: string; threadTs?: string; initialComment?: string },
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<{ ok: boolean; error?: string }> {
   const body: Record<string, unknown> = { files: input.files, channel_id: input.channelId };
@@ -346,7 +347,7 @@ export async function fetchRecentMessageTexts(
   token: string,
   channel: string,
   threadTs: string | undefined,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   limit = 100,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   reconcileMarker?: string,
@@ -413,7 +414,7 @@ const MAX_POST_RATE_LIMIT_WAIT_MS = 10_000;
 export async function postChatMessage(
   token: string,
   input: PostChatMessageInput,
-  fetchImpl: FetchImpl = defaultFetch,
+  fetchImpl: SlackTransport,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<PostChatMessageResult> {

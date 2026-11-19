@@ -1,6 +1,6 @@
 // Available channel history, including broadcast replies. A seen event is not scanned coverage.
 import path from "node:path";
-import { callWebApi, type FetchImpl } from "./slack-api.js";
+import { callWebApi, type SlackTransport } from "./slack-api.js";
 import { ingestDecision, type InboundRouter, type SlackEvent } from "./inbound.js";
 import { ChannelCoverageStore, slackMicros, slackTimestamp, type ChannelCoverage } from "./state-store.js";
 
@@ -9,7 +9,8 @@ interface RecoveryOptions {
   token: string | null;
   stateDir: string;
   router: InboundRouter;
-  fetchImpl?: FetchImpl;
+  /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
+  fetchImpl: SlackTransport;
   store?: ChannelCoverageStore;
   now?: () => number;
 }

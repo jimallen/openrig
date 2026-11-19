@@ -14,7 +14,7 @@ import { seedBacklogAsHistory, type QueueItem, type OutboundQueuePort } from "..
 import { SlackOutboundDriver, OUTBOUND_OP } from "../src/domain/gateway/slack/outbound-driver.js";
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import { buildInProcessWire } from "../src/domain/gateway/gateway-subsystem.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -56,7 +56,7 @@ function fakePort(items: QueueItem[]): OutboundQueuePort & { listCalls: number }
 }
 
 /** Capture every outbound HTTP call: url + parsed JSON body. 2xx by default. */
-function capturingFetch(status = 200): { fetchImpl: FetchImpl; calls: { url: string; body: Record<string, unknown> }[] } {
+function capturingFetch(status = 200): { fetchImpl: SlackTransport; calls: { url: string; body: Record<string, unknown> }[] } {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   return {
     calls,
@@ -71,7 +71,7 @@ function capturingFetch(status = 200): { fetchImpl: FetchImpl; calls: { url: str
 }
 
 /** Compose the REAL subsystem outbound path over a temp home: driver → wire → delivery. */
-function composeOutbound(home: string, port: OutboundQueuePort, fetchImpl: FetchImpl, fsx = memFs()) {
+function composeOutbound(home: string, port: OutboundQueuePort, fetchImpl: SlackTransport, fsx = memFs()) {
   const outboundSeen = new SeenStore("/s/outbound-seen.jsonl", fsx, clock);
   const delivered = new SeenStore("/s/delivered.jsonl", fsx, clock);
   const attempted = new SeenStore("/s/attempted.jsonl", fsx, clock);

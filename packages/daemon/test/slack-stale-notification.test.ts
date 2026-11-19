@@ -20,7 +20,7 @@ import { SeenStore } from "../src/domain/gateway/slack/state-store.js";
 import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: "human-founder@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
 const request = { sourceSession: "author@rig", destinationSession: "human-founder@external", summary: "Stale on replay?", body: "A decision whose first post fails.", nudge: false };
@@ -41,7 +41,7 @@ describe("a retained Slack post replayed after its row closed", () => {
   });
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
-  const wire = (fetchImpl: FetchImpl) => {
+  const wire = (fetchImpl: SlackTransport) => {
     const w = buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl });
     stops.push(() => w.stop());
     return w;

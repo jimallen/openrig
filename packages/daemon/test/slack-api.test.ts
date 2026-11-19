@@ -5,7 +5,7 @@ import {
   verifyScopes,
   verifyChannelMembership,
   openSocketConnection,
-  type FetchImpl,
+  type SlackTransport,
 } from "../src/domain/gateway/slack/slack-api.js";
 
 // Fake Slack: routes by URL, returns real Response objects (headers + json).
@@ -14,7 +14,7 @@ function fakeSlack(spec: {
   scopesHeader?: string; // value of x-oauth-scopes
   methods?: Record<string, { status?: number; json: Record<string, unknown> }>;
   throwOn?: string;
-}): FetchImpl {
+}): SlackTransport {
   return async (url) => {
     if (spec.throwOn && url.includes(spec.throwOn)) throw new Error("ECONNREFUSED");
     if (url.includes("hooks.slack.com") || (!url.includes("slack.com/api/") && url.startsWith("http"))) {

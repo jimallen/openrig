@@ -17,7 +17,7 @@ import { SeenStore, DeadLetterStore, type StateFsOps } from "../src/domain/gatew
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import { buildInProcessWire } from "../src/domain/gateway/gateway-subsystem.js";
 import { OUTBOUND_OP } from "../src/domain/gateway/slack/outbound-driver.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function mapDb(): Database.Database {
   const db = new Database(":memory:");
@@ -209,7 +209,7 @@ describe("outbound threading through the REAL delivery path (one reply root per 
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), "s10-thr-")); });
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
-  function capturing(rootTs: string): { fetchImpl: FetchImpl; bodies: Record<string, unknown>[] } {
+  function capturing(rootTs: string): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
     const bodies: Record<string, unknown>[] = [];
     return {
       bodies,
@@ -267,7 +267,7 @@ describe("#192 channel map — one resolved channel per post (post, reconcile sc
   it("posts, reconciles an ambiguous earlier attempt and uploads in the payload's channel, never the default", async () => {
     const fsx = memFs();
     const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       const method = new URL(url).pathname.split("/").pop() ?? "";
       const raw = String(init?.body ?? "");
       const body: Record<string, unknown> = raw.startsWith("{") ? JSON.parse(raw) as Record<string, unknown>

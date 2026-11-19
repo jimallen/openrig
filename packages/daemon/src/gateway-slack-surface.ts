@@ -29,9 +29,12 @@ export {
 } from "./domain/gateway/slack/manifest.js";
 export { FEATURE_SCOPES, BASELINE_REQUIRED_SCOPES } from "./domain/gateway/slack/capabilities.js";
 export { runChannelOperation, channelStateDigest, type ChannelActor } from "./domain/gateway/channel-operations.js";
+// workspaces-o9o.183: the domain's Slack checks take their HTTP as a port; the CLI's `rig slack verify` gets the production
+// transport here (an adapter: the surface is outside the domain).
+export { slackHttpTransport } from "./adapters/slack-http-transport.js";
 export {
   verifyScopes,
   verifyChannelMembership,
-  type FetchImpl,
+  type SlackTransport,
   type ScopeVerdict,
 } from "./domain/gateway/slack/slack-api.js";

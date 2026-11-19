@@ -7,7 +7,7 @@ import { buildOutboundMessage, attributionFromSession } from "../src/domain/gate
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import { SeenStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -68,7 +68,7 @@ describe("buildOutboundMessage — attribution header + loudness rule", () => {
 });
 
 describe("customize ABSENCE — posted bytes carry the app identity ONLY", () => {
-  function capture(): { fetchImpl: FetchImpl; bodies: Record<string, unknown>[] } {
+  function capture(): { fetchImpl: SlackTransport; bodies: Record<string, unknown>[] } {
     const bodies: Record<string, unknown>[] = [];
     return {
       bodies,

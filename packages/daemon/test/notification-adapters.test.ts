@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { NtfyNotificationAdapter } from "../src/domain/mission-control/notification-adapter-ntfy.js";
-import { WebhookNotificationAdapter } from "../src/domain/mission-control/notification-adapter-webhook.js";
+import { NtfyNotificationAdapter } from "../src/adapters/notification-adapter-ntfy.js";
+import { WebhookNotificationAdapter } from "../src/adapters/notification-adapter-webhook.js";
 
 describe("NtfyNotificationAdapter (PL-005 Phase B)", () => {
   it("POSTs to topic URL with title/click/tags headers + body", async () => {

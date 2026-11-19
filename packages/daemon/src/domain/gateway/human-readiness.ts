@@ -1,6 +1,6 @@
 import type { HumanFragment } from "./human-registry.js";
 import type { SlackConnectorConfig } from "./slack/config.js";
-import { verifyScopes, verifyChannelMembership, type ScopeVerdict } from "./slack/slack-api.js";
+import { verifyScopes, verifyChannelMembership, type ScopeVerdict, type SlackTransport } from "./slack/slack-api.js";
 import { mappedChannels } from "./slack/channel-map.js";
 
 export type HumanDeliveryReadinessState = "ready" | "not-ready" | "indeterminate";
@@ -25,6 +25,8 @@ export interface HumanDeliveryReadinessInput {
 }
 
 export interface HumanDeliveryReadinessDeps {
+  /** HTTP to Slack for the live scope and membership checks (o9o.183: required; the domain holds no default). */
+  slackTransport: SlackTransport;
   verifyScopes?: (token: string, required: string[]) => Promise<ScopeVerdict>;
   verifyMembership?: (token: string, channel: string) => Promise<{ ok: boolean; isMember: boolean; error?: string }>;
   now?: () => Date;
@@ -34,7 +36,7 @@ export interface HumanDeliveryReadinessDeps {
  * Connector details stay behind this transport-neutral shape; secrets never leave it. */
 export async function resolveHumanDeliveryReadiness(
   input: HumanDeliveryReadinessInput,
-  deps: HumanDeliveryReadinessDeps = {},
+  deps: HumanDeliveryReadinessDeps,
 ): Promise<HumanDeliveryReadiness> {
   const primary = input.human.connectorBindings.find((binding) => binding.role === "primary")!;
   const checkedAt = (deps.now?.() ?? new Date()).toISOString();
@@ -60,7 +62,7 @@ export async function resolveHumanDeliveryReadiness(
   }
 
   try {
-    const scope = await (deps.verifyScopes ?? ((token, required) => verifyScopes(token, required)))(
+    const scope = await (deps.verifyScopes ?? ((token, required) => verifyScopes(token, required, deps.slackTransport)))(
       input.botToken,
       [...new Set([...input.config.requiredScopes, "chat:write"])],
     );
@@ -71,7 +73,7 @@ export async function resolveHumanDeliveryReadiness(
     }
     // #192: membership in every channel the connector posts to (the default plus each mapped
     // channel), the same set `rig slack verify` checks. With no map this is the default alone.
-    const verifyMembership = deps.verifyMembership ?? ((token, channel) => verifyChannelMembership(token, channel));
+    const verifyMembership = deps.verifyMembership ?? ((token, channel) => verifyChannelMembership(token, channel, deps.slackTransport));
     const channels = mappedChannels(input.config);
     const missing: string[] = [];
     const unavailable: string[] = [];

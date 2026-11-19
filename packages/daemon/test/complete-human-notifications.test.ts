@@ -20,7 +20,7 @@ import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.j
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { runDeliveryDigestFlush } from "../src/domain/policies/delivery-digest-flush.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: "human-founder@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
 const request = { sourceSession: "author@rig", destinationSession: "human-founder@external", summary: "Use the repaired view?", body: "Why: restores readable status. Recommendation: proceed; status briefly pauses. Approve or hold?", evidenceRef: "/private/retained-proof.md", nudge: false };
@@ -92,7 +92,7 @@ describe("complete human notifications", () => {
   it.each([false, true])("resumes only a missing/ambiguous supplemental part across reconstruction (landed=%s)", async (landed) => {
     const posted: Array<{ text: string; ts: string; thread_ts?: string }> = [];
     let calls = 0;
-    const fetchImpl: FetchImpl = async (url, init) => {
+    const fetchImpl: SlackTransport = async (url, init) => {
       if (!url.endsWith("chat.postMessage")) return reply({ ok: true, messages: posted });
       const content = JSON.parse(String(init?.body)); calls++;
       const msg = { ...content, ts: `${100 + calls}.1` };

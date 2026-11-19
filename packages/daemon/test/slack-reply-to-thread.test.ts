@@ -22,7 +22,7 @@ import type { WsLike } from "../src/domain/gateway/slack/socket-inbound.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "../src/domain/mission-control/mission-control-write-contract.js";
 
@@ -525,7 +525,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       // The first post times out: its outcome is ambiguous, so the replay must reconcile, not repost blindly.
       const scans: string[] = [];
       let failNext = true;
-      const fetchImpl: FetchImpl = async (url, init) => {
+      const fetchImpl: SlackTransport = async (url, init) => {
         if (!url.endsWith("chat.postMessage")) { scans.push(url); return reply({ ok: true, messages: [] }); }
         if (failNext) { failNext = false; throw new Error("synthetic timeout"); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });

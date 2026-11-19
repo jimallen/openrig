@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
 import { SeenStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 const SECRET = "xoxb-1-2-abc";
 
@@ -19,7 +19,7 @@ function memFs(): StateFsOps {
 }
 
 /** Every Slack call's URL and raw body; JSON and form bodies are both kept as text. */
-function slack(): { fetchImpl: FetchImpl; calls: { url: string; body: string }[] } {
+function slack(): { fetchImpl: SlackTransport; calls: { url: string; body: string }[] } {
   const calls: { url: string; body: string }[] = [];
   const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
   return {

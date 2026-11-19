@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { startSocketInbound, type WsLike, type PingChannel, type SocketInboundHandle } from "../src/domain/gateway/slack/socket-inbound.js";
 import { InboundRouter, type SlackEvent } from "../src/domain/gateway/slack/inbound.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -24,7 +24,7 @@ function memFs(): StateFsOps {
 }
 
 interface FakeWs { ws: WsLike; sent: string[]; closed: boolean }
-const openFetch: FetchImpl = async () =>
+const openFetch: SlackTransport = async () =>
   new Response(JSON.stringify({ ok: true, url: "wss://fake-slack/ws" }), { status: 200, headers: { "content-type": "application/json" } });
 const message = (ws: FakeWs, data: unknown) => ws.ws.onmessage!({ data: JSON.stringify(data) });
 const botEcho = (ts: string) => ({ envelope_id: `e-${ts}`, type: "events_api", payload: { event: { type: "message", bot_id: "B1", text: "ours", ts, channel: "C1" } } });

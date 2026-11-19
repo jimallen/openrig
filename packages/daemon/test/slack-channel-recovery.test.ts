@@ -8,7 +8,7 @@ import { InboundRouter, handleEnvelope, type InboundDeps, type SlackEvent } from
 import { ChannelRecovery } from "../src/domain/gateway/slack/channel-recovery.js";
 import { ChannelCoverageStore, SeenStore, DeadLetterStore, InboundReceiptStore, slackMicros, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
 import { startSocketInbound, type WsLike } from "../src/domain/gateway/slack/socket-inbound.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
 import { makeThreadRouteResolver } from "../src/domain/gateway/slack/thread-routing.js";
 
@@ -37,7 +37,7 @@ function fixture() {
   const queries: URL[] = [];
   let pageSize = 25;
   let response: ((url: URL) => Response | Promise<Response>) | undefined;
-  const fetchImpl: FetchImpl = async (url) => {
+  const fetchImpl: SlackTransport = async (url) => {
     const u = new URL(url);
     if (u.pathname.endsWith("apps.connections.open")) return Response.json({ ok: true, url: "wss://fixture" });
     queries.push(u);

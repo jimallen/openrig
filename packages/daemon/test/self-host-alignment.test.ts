@@ -20,7 +20,7 @@ import {
   setSelfHostId,
   resolvesToLocalHost,
 } from "../src/domain/hosts/fanout-contract.js";
-import { hostReadThrough } from "../src/domain/hosts/read-through.js";
+import { hostReadThrough } from "../src/middleware/host-read-through.js";
 import type { HostRegistry } from "../src/domain/hosts/hosts-registry-reader.js";
 import { contextRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 

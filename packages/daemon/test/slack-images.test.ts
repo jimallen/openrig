@@ -10,7 +10,7 @@ import path from "node:path";
 import { subsystemSlackDeliver, isHttpsImageRef, evidenceAttachment, defaultReadLocalImage, LOCAL_ATTACHMENT_MAX_BYTES } from "../src/domain/gateway/slack/slack-delivery.js";
 import { SeenStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -25,7 +25,7 @@ function memFs(): StateFsOps {
 const clock = () => new Date("2026-08-27T00:00:00.000Z");
 
 interface Call { url: string; contentType?: string; body?: unknown }
-function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: FetchImpl; calls: Call[] } {
+function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: SlackTransport; calls: Call[] } {
   const calls: Call[] = [];
   return {
     calls,
@@ -57,7 +57,7 @@ function slackFetch(failLeg?: "get-url" | "put" | "complete"): { fetchImpl: Fetc
   };
 }
 
-function makeDeliver(fetchImpl: FetchImpl, logs: string[] = []) {
+function makeDeliver(fetchImpl: SlackTransport, logs: string[] = []) {
   const fsx = memFs();
   return subsystemSlackDeliver({
     botToken: "xox" + "b-EXAMPLE-fake",
@@ -128,7 +128,7 @@ describe("local attachments: images, video and PDF from disk, size-capped, misse
   beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "slack-attach-")); });
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = (name: string, bytes = 1) => { const p = path.join(dir, name); fs.writeFileSync(p, Buffer.alloc(bytes, 1)); return p; };
-  function deliverWithDefaultReader(fetchImpl: FetchImpl, logs: string[]) {
+  function deliverWithDefaultReader(fetchImpl: SlackTransport, logs: string[]) {
     const fsx = memFs();
     return subsystemSlackDeliver({
       botToken: "xox" + "b-EXAMPLE-fake", channel: "C-TEST", sourceLabel: "vm", fetchImpl,

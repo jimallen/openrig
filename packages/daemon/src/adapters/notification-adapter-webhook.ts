@@ -1,4 +1,6 @@
 // PL-005 Phase B: generic webhook adapter (operator-routable alternate).
+// workspaces-o9o.183: an adapter of the domain's NotificationAdapter port (domain/mission-control/notification-adapter-types.ts), so it
+// lives in src/adapters: it is where the HTTP POST happens. Moved from src/domain/mission-control/.
 //
 // Documented stable JSON body shape so the operator can POST through
 // Slack incoming webhooks, Discord, Telegram bots, or their own infra.
@@ -7,8 +9,8 @@ import type {
   NotificationAdapter,
   NotificationDeliveryResult,
   NotificationPayload,
-} from "./notification-adapter-types.js";
-import { validateOutboundUrl, redactUrl, safeDecodeURIComponent } from "./outbound-url-validator.js";
+} from "../domain/mission-control/notification-adapter-types.js";
+import { validateOutboundUrl, redactUrl, safeDecodeURIComponent } from "../domain/mission-control/outbound-url-validator.js";
 
 export interface WebhookAdapterOpts {
   /** Full webhook endpoint URL. */

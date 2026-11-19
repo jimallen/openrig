@@ -15,6 +15,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
+import { noSlackHttp } from "./helpers/no-slack-http.js";
 import { DeadLetterStore } from "../src/domain/gateway/slack/state-store.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 
@@ -43,7 +44,7 @@ describe("slack status: durable inbound dead-letter backlog", () => {
   const writeActionBacklog = (entries: number) => writeRecords("slack-inbound-action-deadletter.jsonl", entries);
   const build = () => {
     const repo = new QueueRepository(db, new EventBus(db));
-    return buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo });
+    return buildSlackGatewayWire({ credentialFiles: TMP_CREDENTIAL_FILES, home, queueRepo: repo, fetchImpl: noSlackHttp });
   };
 
   it("reports the retained dead-letter records awaiting retry on an enabled connector", () => {

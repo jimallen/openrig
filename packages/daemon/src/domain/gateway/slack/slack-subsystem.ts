@@ -38,7 +38,7 @@ import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, isBlockerLive, type QueueRepository } from "../../queue-repository.js";
 import { formatReplyToChoice, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "../../reply-to-choice.js";
 import { parseSessionName } from "../../session-name.js";
-import type { FetchImpl } from "./slack-api.js";
+import type { SlackTransport } from "./slack-api.js";
 import { ownerNotificationLevelAtLeast } from "../../queue-transition-log.js";
 // OPR.0.5.6.1 — the delivery rules engine: ONE decision per message replaces
 // the two dial-reads (the S14 default-decision stub). The legacy dial path
@@ -64,8 +64,9 @@ export interface SlackWireOpts {
   /** workspaces-o9o.151: reads the secrets env file under the credential rule (required: wired in startup.ts). */
   credentialFiles: CredentialFileReader;
   log?: (msg: string) => void;
-  /** Injectable seams (tests): fetch, websocket factory, sweep cadence, registry surface. */
-  fetchImpl?: FetchImpl;
+  /** HTTP to Slack (o9o.183: required; startup.ts wires src/adapters/slack-http-transport.ts, tests a fake). */
+  fetchImpl: SlackTransport;
+  /** Injectable seams (tests): websocket factory, sweep cadence, registry surface. */
   wsFactory?: (url: string) => WsLike;
   outboundIntervalMs?: number;
   inboundRetryIntervalMs?: number;
@@ -127,7 +128,7 @@ export function makeHumanReplyResolver(
 export function makeInboundFilePort(opts: {
   token: string;
   mediaDir: string;
-  fetchImpl?: FetchImpl;
+  fetchImpl: SlackTransport;
   mkdirp?: (dir: string) => void;
   writeFile?: (p: string, bytes: Uint8Array) => void;
   log?: (msg: string) => void;
@@ -152,7 +153,7 @@ export function makeInboundFilePort(opts: {
           failed.push({ name, error: "missing or non-Slack url_private" });
           continue;
         }
-        const dl = await downloadPrivateFile(url, opts.token, opts.fetchImpl ?? fetch, 30_000, opts.maxBytes);
+        const dl = await downloadPrivateFile(url, opts.token, opts.fetchImpl, 30_000, opts.maxBytes);
         if (!dl.ok) {
           log(`inbound file transfer FAILED name=${name} ts=${eventTs}: ${dl.error}`);
           failed.push({ name, error: dl.error });

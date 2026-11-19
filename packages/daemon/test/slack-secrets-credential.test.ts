@@ -9,6 +9,7 @@ import { nodeCredentialFileReader } from "../src/adapters/node-credential-file-r
 import { checkEnvFilePermissions, resolveSecret } from "../src/domain/gateway/slack/secrets.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
+import { noSlackHttp } from "./helpers/no-slack-http.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -74,7 +75,7 @@ describe("a refused secrets file disables Slack only (o9o.151, CoS decision 3)",
     const db = createDb();
     migrate(db, ALL_MIGRATIONS);
     const lines: string[] = [];
-    const wire = buildSlackGatewayWire({ home, queueRepo: new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => ({ ok: true as const, entities: [] }) }), credentialFiles: reader, log: (l: string) => lines.push(l) });
+    const wire = buildSlackGatewayWire({ home, queueRepo: new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => ({ ok: true as const, entities: [] }) }), credentialFiles: reader, fetchImpl: noSlackHttp, log: (l: string) => lines.push(l) });
     return { status: wire.status?.() ?? {}, log: lines.join("\n"), secrets };
   }
 

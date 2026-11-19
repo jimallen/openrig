@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { startSocketInbound, type WsLike, type SocketInboundDeps } from "../src/domain/gateway/slack/socket-inbound.js";
 import { InboundRouter, type SlackEvent } from "../src/domain/gateway/slack/inbound.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(onAppend?: (path: string, data: string) => void): StateFsOps {
   const files = new Map<string, string>();
@@ -33,7 +33,7 @@ function makeFakeWs() {
   return { ws, sent };
 }
 // fetchImpl that answers apps.connections.open with a ws url.
-const openFetch: FetchImpl = async () =>
+const openFetch: SlackTransport = async () =>
   new Response(JSON.stringify({ ok: true, url: "wss://fake-slack/ws" }), { status: 200, headers: { "content-type": "application/json" } });
 
 const envelope = (event: SlackEvent, id = `e-${event.ts}`) => JSON.stringify({ envelope_id: id, type: "events_api", payload: { event } });

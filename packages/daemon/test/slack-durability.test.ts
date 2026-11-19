@@ -15,7 +15,7 @@ import { buildInProcessWire } from "../src/domain/gateway/gateway-subsystem.js";
 import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
 import { OUTBOUND_OP, type OutboundPostPayload } from "../src/domain/gateway/slack/outbound-driver.js";
 import type { OutboundDecision } from "../src/domain/gateway/protocol.js";
-import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import type { SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
 function memFs(): StateFsOps {
   const files = new Map<string, string>();
@@ -36,7 +36,7 @@ const activeCount = (s: string, form: string): number => s.split(form).length - 
 function slackDouble(opts: { timeoutFirstPost: boolean; timeoutLanded: boolean; historyReadable?: boolean; extraHistory?: string[] }) {
   const posted: string[] = []; // texts that actually LANDED on "Slack"
   let postCalls = 0;
-  const fetchImpl: FetchImpl = async (url, init) => {
+  const fetchImpl: SlackTransport = async (url, init) => {
     if (url.endsWith("chat.postMessage")) {
       postCalls++;
       const text = String((JSON.parse(String(init?.body ?? "{}")) as { text?: string }).text ?? "");
@@ -60,7 +60,7 @@ function slackDouble(opts: { timeoutFirstPost: boolean; timeoutLanded: boolean; 
   return { fetchImpl, posted, postCount: () => postCalls };
 }
 
-function harness(fetchImpl: FetchImpl) {
+function harness(fetchImpl: SlackTransport) {
   const fsx = memFs();
   const outboundSeen = new SeenStore("/seen.jsonl", fsx, clock);
   const deliver = subsystemSlackDeliver({

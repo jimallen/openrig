@@ -17,7 +17,7 @@
 // signal replaces the connection: a new one opens first, then the old one goes.
 
 import dc from "node:diagnostics_channel";
-import { openSocketConnection, type FetchImpl } from "./slack-api.js";
+import { openSocketConnection, type SlackTransport } from "./slack-api.js";
 import { handleEnvelope, type InboundRouter, type SocketEnvelope } from "./inbound.js";
 import type { InboundReceiptStore, InboundReceiptStatus } from "./state-store.js";
 
@@ -36,7 +36,8 @@ export interface PingChannel {
 }
 
 export interface SocketInboundDeps {
-  fetchImpl?: FetchImpl;
+  /** HTTP to Slack (o9o.183: required; the domain holds no default; production wires src/adapters/slack-http-transport.ts). */
+  fetchImpl: SlackTransport;
   /** Open a Socket Mode WebSocket (default: global WebSocket). Injectable for tests. */
   wsFactory?: (url: string) => WsLike;
   /** Test seam: run N reconnect cycles then stop (default: forever, until stop()). */
@@ -124,7 +125,7 @@ const REFRESH_DRAIN_MS = 30_000;
 const JUST_CLOSED_MS = 10_000;
 
 /** Start the Socket Mode loop (the shipped runner's exact shape, service-ified with a stop()). */
-export function startSocketInbound(appToken: string, router: InboundRouter, deps: SocketInboundDeps = {}): SocketInboundHandle {
+export function startSocketInbound(appToken: string, router: InboundRouter, deps: SocketInboundDeps): SocketInboundHandle {
   const log = deps.log ?? (() => {});
   const wsFactory = deps.wsFactory ?? ((url: string) => new (globalThis as unknown as { WebSocket: new (u: string) => WsLike }).WebSocket(url));
   const retryIntervalMs = deps.retryIntervalMs ?? 5 * 60 * 1000;

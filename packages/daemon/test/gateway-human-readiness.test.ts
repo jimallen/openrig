@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { resolveHumanDeliveryReadiness } from "../src/domain/gateway/human-readiness.js";
 import { gatewayRoutes } from "../src/routes/gateway.js";
+import { noSlackHttp } from "./helpers/no-slack-http.js";
 import type { HumanFragment } from "../src/domain/gateway/human-registry.js";
 import type { SlackConnectorConfig } from "../src/domain/gateway/slack/config.js";
 
@@ -29,7 +30,7 @@ const config: SlackConnectorConfig = {
 
 describe("registered human primary-binding readiness", () => {
   it("returns connector-neutral ready fields from live scope and membership evidence", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: async () => ({ ok: true, granted: ["chat:write", "channels:read"], missing: [] }),
       verifyMembership: async () => ({ ok: true, isMember: true }),
       now: () => new Date("2026-09-06T01:00:00.000Z"),
@@ -55,7 +56,7 @@ describe("registered human primary-binding readiness", () => {
     });
     app.route("/", gatewayRoutes({
       readiness: async (entityId, gatewayState) => entityId === "founder"
-        ? resolveHumanDeliveryReadiness({ human, config, gatewayState, botToken: "secret" }, {
+        ? resolveHumanDeliveryReadiness({ human, config, gatewayState, botToken: "secret" }, { slackTransport: noSlackHttp,
             verifyScopes: async () => ({ ok: true, granted: config.requiredScopes, missing: [] }),
             verifyMembership: async () => ({ ok: true, isMember: true }),
           })
@@ -71,7 +72,7 @@ describe("registered human primary-binding readiness", () => {
 
   it("names disabled configuration without probing the connector", async () => {
     const verifyScopes = vi.fn(async () => ({ ok: true, granted: [], missing: [] }));
-    const result = await resolveHumanDeliveryReadiness({ human, config: { ...config, enabled: false }, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: { ...config, enabled: false }, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes,
       verifyMembership: async () => ({ ok: true, isMember: true }),
     });
@@ -80,7 +81,7 @@ describe("registered human primary-binding readiness", () => {
   });
 
   it("keeps an unreachable live probe indeterminate instead of calling it ready or failed", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: async () => ({ ok: false, granted: [], missing: config.requiredScopes, error: "request timed out" }),
       verifyMembership: async () => ({ ok: true, isMember: true }),
     });
@@ -101,7 +102,7 @@ describe("#192 readiness checks every channel the connector posts to", () => {
 
   it("is not-ready when the app is missing from a mapped channel, naming the channel and what maps to it", async () => {
     const asked: string[] = [];
-    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: scopes, verifyMembership: membership({ C0DEFAULT: yes, C0EXAMPLE1: yes, C0EXAMPLE2: { ok: true, isMember: false } }, asked),
     });
     expect(asked).toEqual(["C0DEFAULT", "C0EXAMPLE1", "C0EXAMPLE2"]); // each unique channel once
@@ -109,28 +110,28 @@ describe("#192 readiness checks every channel the connector posts to", () => {
   });
 
   it("names every missing channel, the default first", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: scopes, verifyMembership: membership({ C0DEFAULT: { ok: true, isMember: false }, C0EXAMPLE1: { ok: true, isMember: false }, C0EXAMPLE2: yes }, []),
     });
     expect(result.reason).toBe("connector is not a member of its configured channel; mapped channel C0EXAMPLE1 (my-rig, other-rig)");
   });
 
   it("is ready only when the app is in every channel", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: scopes, verifyMembership: membership({ C0DEFAULT: yes, C0EXAMPLE1: yes, C0EXAMPLE2: yes }, []),
     });
     expect(result).toMatchObject({ state: "ready", ready: true, reason: "required scopes and channel membership verified (3 channels)", nextAction: null });
   });
 
   it("is indeterminate when a mapped check is unavailable and no channel is known to be missing", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: scopes, verifyMembership: membership({ C0DEFAULT: yes, C0EXAMPLE1: { ok: false, isMember: false, error: "ratelimited" }, C0EXAMPLE2: yes }, []),
     });
     expect(result).toMatchObject({ state: "indeterminate", reason: "channel membership verification unavailable: C0EXAMPLE1: ratelimited" });
   });
 
   it("a known missing channel outranks an unavailable check", async () => {
-    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, {
+    const result = await resolveHumanDeliveryReadiness({ human, config: mapped, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
       verifyScopes: scopes, verifyMembership: membership({ C0DEFAULT: yes, C0EXAMPLE1: { ok: false, isMember: false, error: "ratelimited" }, C0EXAMPLE2: { ok: true, isMember: false } }, []),
     });
     expect(result).toMatchObject({ state: "not-ready", reason: "connector is not a member of mapped channel C0EXAMPLE2 (pr@my-rig)" });
@@ -139,7 +140,7 @@ describe("#192 readiness checks every channel the connector posts to", () => {
   it("without a map: one check of the default channel, with today's wording for every outcome", async () => {
     const run = async (answer: { ok: boolean; isMember: boolean; error?: string }) => {
       const asked: string[] = [];
-      const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, {
+      const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, { slackTransport: noSlackHttp,
         verifyScopes: scopes, verifyMembership: membership({ C1: answer }, asked),
       });
       return { asked, state: result.state, reason: result.reason };

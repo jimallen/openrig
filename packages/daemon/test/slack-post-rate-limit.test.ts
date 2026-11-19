@@ -5,15 +5,15 @@
 // Slack rejected the request without accepting it, so the single retry cannot
 // double-post, and the delivery path already reconciles by marker on replay.
 import { describe, it, expect, vi } from "vitest";
-import { postChatMessage, type FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
+import { postChatMessage, type SlackTransport } from "../src/domain/gateway/slack/slack-api.js";
 
-function scriptedSlack(responses: Response[]): { fetchImpl: FetchImpl; calls: () => number } {
+function scriptedSlack(responses: Response[]): { fetchImpl: SlackTransport; calls: () => number } {
   let i = 0;
   const fetchImpl = (async () => {
     const res = responses[Math.min(i, responses.length - 1)]!;
     i += 1;
     return res;
-  }) as FetchImpl;
+  }) as SlackTransport;
   return { fetchImpl, calls: () => i };
 }
 

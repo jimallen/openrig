@@ -15,14 +15,14 @@ import {
   postChatMessage,
   getUploadURLExternal,
   completeUploadExternal,
-  type FetchImpl,
+  type SlackTransport,
 } from "../src/domain/gateway/slack/slack-api.js";
 
 interface Captured { url: string; method: string; headers: Record<string, string>; body: string | undefined }
 
 /** A fake Slack that enforces the MEASURED live contract for read methods: JSON POST →
  *  invalid_arguments; GET + query → ok. JSON-POST family methods accept POST as before. */
-function shapeEnforcingSlack(): { fetchImpl: FetchImpl; calls: Captured[] } {
+function shapeEnforcingSlack(): { fetchImpl: SlackTransport; calls: Captured[] } {
   const calls: Captured[] = [];
   const READ_METHODS = ["conversations.info", "conversations.history", "conversations.replies"];
   return {
@@ -110,7 +110,7 @@ describe("request shape — the JSON-POST family is UNDISTURBED", () => {
 });
 
 describe("external-upload methods are form-encoded POSTs (files.getUploadURLExternal rejects JSON)", () => {
-  function capture(): { fetchImpl: FetchImpl; calls: Captured[] } {
+  function capture(): { fetchImpl: SlackTransport; calls: Captured[] } {
     const calls: Captured[] = [];
     return {
       calls,

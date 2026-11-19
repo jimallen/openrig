@@ -2,7 +2,7 @@ import http from "node:http";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { NtfyNotificationAdapter } from "../src/domain/mission-control/notification-adapter-ntfy.js";
+import { NtfyNotificationAdapter } from "../src/adapters/notification-adapter-ntfy.js";
 
 describe("ntfy native transport", () => {
   it("delivers a truncated long ASCII title through native fetch", async () => {

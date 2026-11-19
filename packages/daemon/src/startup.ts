@@ -1,6 +1,7 @@
 // workspaces-o9o.151: the one production CredentialFileReader, handed to every domain service that reads hosts.yaml or a bearer file.
 import { nodeCredentialFileReader } from "./adapters/node-credential-file-reader.js";
 import { nodeRemoteDaemonClient } from "./adapters/remote-daemon-http.js";
+import { slackHttpTransport } from "./adapters/slack-http-transport.js";
 import { sessionCodeMode } from "./domain/claude-code-mode.js";
 import { fileURLToPath } from "node:url";
 import { CodexRolloutOpenCalls } from "./adapters/codex-rollout-open-calls.js";
@@ -213,8 +214,8 @@ import {
 } from "./domain/mission-control/mission-control-fleet-cli-capability.js";
 import { MissionControlAuditBrowse } from "./domain/mission-control/audit-browse.js";
 import { MissionControlNotificationDispatcher } from "./domain/mission-control/notification-dispatcher.js";
-import { NtfyNotificationAdapter } from "./domain/mission-control/notification-adapter-ntfy.js";
-import { WebhookNotificationAdapter } from "./domain/mission-control/notification-adapter-webhook.js";
+import { NtfyNotificationAdapter } from "./adapters/notification-adapter-ntfy.js";
+import { WebhookNotificationAdapter } from "./adapters/notification-adapter-webhook.js";
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import type { BindingAttachmentType } from "./domain/types.js";
 import { OPENRIG_HOME, resolveSharedDocsRoot } from "./openrig-compat.js";
@@ -1447,7 +1448,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),
-    humanReadiness: (address) => healthHumanReadiness(nodeCredentialFileReader, OPENRIG_HOME, address, deps.gatewaySubsystem?.status().state === "active"),
+    humanReadiness: (address) => healthHumanReadiness(nodeCredentialFileReader, OPENRIG_HOME, address, deps.gatewaySubsystem?.status().state === "active", slackHttpTransport),
   });
   // OPR.0.4.3.20 FR-4 — inject contextUsageStore so refresh() can null-fill a
   // Claude token from the sidecar during periodic/manual snapshot refresh.
@@ -3019,6 +3020,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       home: OPENRIG_HOME,
       queueRepo: queueRepoInstance,
       credentialFiles: nodeCredentialFileReader,
+      fetchImpl: slackHttpTransport,
       resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract),
       log: (m) => console.log(`[gateway] ${m}`),
     }),

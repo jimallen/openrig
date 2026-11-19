@@ -12,7 +12,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { Hono } from "hono";
 import { remoteUpLeaf } from "../src/domain/topology/remote-up-leaf.js";
-import { hostReadThrough } from "../src/domain/hosts/read-through.js";
+import { hostReadThrough } from "../src/middleware/host-read-through.js";
 import { remoteJsonRequest, remoteRawRequest, contextRemoteDaemonClient, HttpRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 import { LOCAL_HOST_ID, hostsCovered } from "../src/domain/hosts/fanout-contract.js";
 import type { AggregatedPayload } from "../src/domain/hosts/fanout-contract.js";

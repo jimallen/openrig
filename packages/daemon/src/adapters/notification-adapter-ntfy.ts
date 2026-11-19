@@ -1,4 +1,6 @@
 // PL-005 Phase B: ntfy.sh adapter (default per planner brief).
+// workspaces-o9o.183: an adapter of the domain's NotificationAdapter port (domain/mission-control/notification-adapter-types.ts), so it
+// lives in src/adapters: it is where the HTTP POST happens. Moved from src/domain/mission-control/.
 //
 // ntfy.sh contract: HTTP POST to https://ntfy.sh/<topic> with the body
 // as the notification text. Headers like Title, Click, Tags shape the
@@ -9,8 +11,8 @@ import type {
   NotificationAdapter,
   NotificationDeliveryResult,
   NotificationPayload,
-} from "./notification-adapter-types.js";
-import { validateOutboundUrl, redactUrl, safeDecodeURIComponent } from "./outbound-url-validator.js";
+} from "../domain/mission-control/notification-adapter-types.js";
+import { validateOutboundUrl, redactUrl, safeDecodeURIComponent } from "../domain/mission-control/outbound-url-validator.js";
 
 export interface NtfyAdapterOpts {
   /**

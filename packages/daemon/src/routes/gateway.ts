@@ -8,6 +8,7 @@
 //   POST /api/gateway/slack/disable — flip enabled=false and restart (the wire becomes inert).
 
 import { nodeCredentialFileReader } from "../adapters/node-credential-file-reader.js";
+import { slackHttpTransport } from "../adapters/slack-http-transport.js";
 import { connectionsProjection } from "../domain/gateway/connections-projection.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { Hono } from "hono";
@@ -71,7 +72,7 @@ export function gatewayRoutes(opts: {
     if (!human) return c.json({ error: "human_not_found", entityId }, 404);
     const cfg = loadConfig(home);
     const botToken = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined, credentialFiles: nodeCredentialFileReader });
-    const readiness = await resolveHumanDeliveryReadiness({ human, config: cfg, gatewayState, botToken });
+    const readiness = await resolveHumanDeliveryReadiness({ human, config: cfg, gatewayState, botToken }, { slackTransport: slackHttpTransport });
     return c.json({ ok: true, readiness });
   });
 
