@@ -219,6 +219,7 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "param-bound.ts": "async function w(b5: WB) { for (;;) { if (b5.expired()) throw waitTimedOut('x', b5); await nap(); } }",
       "foreign-maker.ts": "declare function makeBound(ms: number): WB;\nasync function w() { const b6 = makeBound(9); for (;;) { if (b6.expired()) throw waitTimedOut('x', b6); await nap(); } }",
       "fake-alias.ts": "declare const typed2: WB;\nasync function w() { const b7 = typed2; for (;;) { if (b7.expired()) throw waitTimedOut('x', b7); await nap(); } }",
+      "cycle.ts": "async function w() { const c1: WB = c2; const c2: WB = c1; for (;;) { if (c1.expired()) throw waitTimedOut('x', c1); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
@@ -253,6 +254,7 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "param-bound.ts:1", kind: "unscaled" },    // a parameter's caller is not seen: make the bound where the wait is
       { at: "foreign-maker.ts:2", kind: "unscaled" },  // another function returning WaitBound is not waitBound()
       { at: "fake-alias.ts:2", kind: "unscaled" },     // an alias of a fake stays a fake
+      { at: "cycle.ts:1", kind: "unscaled" },          // const aliases of each other: no waitBound() at the end, and the walk ends
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
