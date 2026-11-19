@@ -77,10 +77,13 @@ const madeByWaitBound = (checker: ts.TypeChecker) => {
   };
   /** workspaces-3u9 round 2 (verify-qa): every use of the const reads it. A use is a property read, an argument to waitTimedOut, or the
    *  initializer of a const alias whose own uses pass the same test. Anything else (Object.assign, defineProperty, setPrototypeOf, an
-   *  assignment to a property, handing it to any other function) could replace what expired() does on the genuine instance. */
+   *  assignment to a property, handing it to any other function) could replace what expired() does on the genuine instance. An exported
+   *  const (`export const`, `export { b }`, `export default b`) is never the bound: another module can use it in ways this file does not
+   *  show (round 3, verify-qa; CoS ruling: unscaled, full stop, with no program-wide reference scan). */
   const onlyRead = (symbol: ts.Symbol, d: ts.VariableDeclaration, seen: Set<ts.Symbol>): boolean => {
     if (seen.has(symbol)) return true;
     seen.add(symbol);
+    if ((ts.getCombinedModifierFlags(d) & ts.ModifierFlags.Export) !== 0) return false;
     let ok = true;
     const allowed = (id: ts.Identifier): boolean => {
       const up = id.parent;
@@ -94,7 +97,8 @@ const madeByWaitBound = (checker: ts.TypeChecker) => {
     };
     const visit = (n: ts.Node): void => {
       if (!ok) return;
-      if (ts.isIdentifier(n) && n !== d.name && checker.getSymbolAtLocation(n) === symbol && !allowed(n)) ok = false;
+      if (ts.isExportSpecifier(n) && checker.getExportSpecifierLocalTargetSymbol(n) === symbol) ok = false;
+      else if (ts.isIdentifier(n) && n !== d.name && checker.getSymbolAtLocation(n) === symbol && !allowed(n)) ok = false;
       else ts.forEachChild(n, visit);
     };
     visit(d.getSourceFile());
@@ -272,6 +276,13 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "deleted.ts": "async function w() { const b17 = waitBound(9); delete b17.expired; for (;;) { if (b17.expired()) throw waitTimedOut('x', b17); await nap(); } }",
       "bumped.ts": "async function w() { const b18 = waitBound(9); b18.ms++; for (;;) { if (b18.expired()) throw waitTimedOut('x', b18); await nap(); } }",
       "element-write.ts": "async function w() { const b19 = waitBound(9); b19['expired'] = () => true; for (;;) { if (b19.expired()) throw waitTimedOut('x', b19); await nap(); } }",
+      // workspaces-3u9 round 3 (verify-qa, CoS ruling): an exported waitBound() const, or an exported alias of one, is never the bound;
+      // another module can use it in ways this file does not show. verify-qa's two-file case, verbatim:
+      "exported-bound.ts": "export const b20 = waitBound(9);\nasync function w() {\n  for (;;) {\n    if (b20.expired()) throw waitTimedOut(\"x\", b20);\n    await nap();\n  }\n}",
+      "exported-bound-mutator.ts": "import { b20 } from \"./exported-bound\";\nObject.assign(b20, { expired: () => true });",
+      "exported-alias.ts": "const b21 = waitBound(9);\nexport const b22 = b21;\nasync function w() { for (;;) { if (b21.expired()) throw waitTimedOut('x', b21); await nap(); } }",
+      "export-list.ts": "const b23 = waitBound(9);\nexport { b23 };\nasync function w() { for (;;) { if (b23.expired()) throw waitTimedOut('x', b23); await nap(); } }",
+      "export-default.ts": "const b24 = waitBound(9);\nexport default b24;\nasync function w() { for (;;) { if (b24.expired()) throw waitTimedOut('x', b24); await nap(); } }",
       "reads.ts": "async function w() { const b15 = waitBound(9); setTimeout(nap, b15.ms); const b16 = b15; for (;;) { if (b16.expired()) throw waitTimedOut(`x ${b15.deadline}`, b15); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
@@ -317,6 +328,10 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "deleted.ts:1", kind: "unscaled" },
       { at: "bumped.ts:1", kind: "unscaled" },
       { at: "element-write.ts:1", kind: "unscaled" },
+      { at: "exported-bound.ts:4", kind: "unscaled" },     // an exported waitBound() const (verify-qa, 3u9 round 3)
+      { at: "exported-alias.ts:3", kind: "unscaled" },     // an exported alias of one
+      { at: "export-list.ts:3", kind: "unscaled" },        // exported by an export list (its name resolves to the export, not the const)
+      { at: "export-default.ts:3", kind: "unscaled" },
       { at: "reads.ts:1", kind: "evidenced" },         // reads, an alias and waitTimedOut are uses that leave it the bound
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
