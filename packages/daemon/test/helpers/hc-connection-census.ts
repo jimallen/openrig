@@ -17,12 +17,13 @@ import ts from "typescript";
 export interface CensusSite {
   /** `<file relative to src>:<enclosing function, "Class.method", or "(module)">` */
   site: string;
-  kind: "unchecked-hc-client" | "opening" | "require" | "dynamic-import" | "wrapper-call";
+  kind: "unchecked-hc-client" | "opening" | "require" | "dynamic-import" | "wrapper-call" | "reflective";
   /** For a wrapper call, the wrapper's own site; for an unchecked HcClient, the third argument's text. */
   detail: string;
 }
 
-const NET_FILE = /[\\/]@types[\\/]node[\\/]net\.d\.ts$/;
+const NODE_TYPES = /[\\/]@types[\\/]node[\\/](net|tls|http|https|module)\.d\.ts$/;
+const nodeTypesFile = (decl: ts.Node): string | undefined => NODE_TYPES.exec(decl.getSourceFile().fileName)?.[1];
 const isHcClientFile = (f: string) => /[\\/]adapters[\\/]hc-client\.ts$/.test(f);
 
 /** The name of the function, method or variable a node sits in: "Class.method", "functionName" or "variable". */
@@ -54,6 +55,13 @@ function resolvedDeclaration(checker: ts.TypeChecker, node: ts.CallExpression | 
   return sym?.valueDeclaration ?? sym?.declarations?.[0];
 }
 
+/** A socketPath the argument's type only allows (an optional property of a declared options type, as http's RequestOptions has) is not
+ *  one the call carries: only a literal or inferred object that HAS socketPath counts. */
+function isOptionalOnly(checker: ts.TypeChecker, arg: ts.Expression): boolean {
+  const prop = checker.getTypeAtLocation(arg).getProperty("socketPath");
+  return !!prop && (prop.flags & ts.SymbolFlags.Optional) !== 0;
+}
+
 /** True when `type` is HcClient's class (`typeof HcClient`) or a class deriving from it. */
 function isHcClientClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
   for (const sig of type.getConstructSignatures()) {
@@ -67,13 +75,40 @@ function isHcClientClassType(checker: ts.TypeChecker, type: ts.Type): boolean {
   return false;
 }
 
-function isNetOpening(decl: ts.Declaration | undefined): boolean {
-  if (!decl || !NET_FILE.test(decl.getSourceFile().fileName)) return false;
+/**
+ * Is `decl` (what a call or construction resolves to) a socket opening? node:net's createConnection / connect (a function or Socket's
+ * method) and its Socket class; node:tls's connect (rt2 round 2); node:http/https's Agent createConnection; and node:http/https's
+ * request / get when the call carries a socketPath (`hasSocketPath`), which is how they reach a unix socket.
+ */
+function isNetOpening(decl: ts.Declaration | undefined, hasSocketPath = false): boolean {
+  if (!decl) return false;
+  const module = nodeTypesFile(decl);
+  if (!module || module === "module") return false;
   const name = (decl as { name?: ts.Node }).name;
   const text = name && ts.isIdentifier(name) ? name.text : ts.isConstructorDeclaration(decl) && decl.parent && ts.isClassDeclaration(decl.parent) ? decl.parent.name?.text : undefined;
-  if (ts.isClassDeclaration(decl)) return decl.name?.text === "Socket";
-  if (ts.isConstructorDeclaration(decl)) return text === "Socket";
-  return text === "createConnection" || text === "connect";
+  if (module === "net") {
+    if (ts.isClassDeclaration(decl)) return decl.name?.text === "Socket";
+    if (ts.isConstructorDeclaration(decl)) return text === "Socket";
+    return text === "createConnection" || text === "connect";
+  }
+  if (module === "tls") return text === "connect";
+  return text === "createConnection" || ((text === "request" || text === "get") && hasSocketPath);
+}
+
+/** Is the callee node's `require` (the global, or any value of its type: `const req = require`)? */
+function isRequire(checker: ts.TypeChecker, callee: ts.Expression): boolean {
+  if (ts.isIdentifier(callee) && callee.text === "require") return true;
+  const sym = checker.getTypeAtLocation(callee).getSymbol();
+  return !!sym && (sym.name === "Require" || sym.name === "NodeRequire") && (sym.declarations ?? []).some((d) => nodeTypesFile(d) === "module");
+}
+
+/** Is `decl` the built-in Reflect.construct? */
+function isReflectConstruct(decl: ts.Declaration | undefined): boolean {
+  if (!decl || !/[\\/]lib\.[\w.]*\.d\.ts$/.test(decl.getSourceFile().fileName)) return false;
+  const name = (decl as { name?: ts.Node }).name;
+  if (!name || !ts.isIdentifier(name) || name.text !== "construct") return false;
+  for (let n: ts.Node | undefined = decl.parent; n; n = n.parent) if (ts.isModuleDeclaration(n) && n.name.getText() === "Reflect") return true;
+  return false;
 }
 
 /**
@@ -110,11 +145,18 @@ export function censusHcConnections(program: ts.Program, srcRoot: string, propag
           if (base && isHcClientClassType(checker, checker.getTypeAtLocation(base.expression))) checkThird(node);
         } else if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
           if (!node.arguments[0] || !ts.isStringLiteralLike(node.arguments[0])) out.push({ site: siteOf(node), kind: "dynamic-import", detail: node.arguments[0]?.getText() ?? "" });
-        } else if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
+        } else if (isRequire(checker, node.expression)) {
           out.push({ site: siteOf(node), kind: "require", detail: node.arguments[0]?.getText() ?? "" });
         } else {
           const decl = resolvedDeclaration(checker, node);
-          if (isNetOpening(decl)) out.push({ site: siteOf(node), kind: "opening", detail: (decl as { name?: ts.Node }).name?.getText() ?? "connect" });
+          const socketPath = node.arguments.some((a) => !!checker.getTypeAtLocation(a).getProperty("socketPath") && !isOptionalOnly(checker, a));
+          if (isNetOpening(decl, socketPath)) out.push({ site: siteOf(node), kind: "opening", detail: (decl as { name?: ts.Node }).name?.getText() ?? "connect" });
+          // rt2 round 2: reflective construction is a site outright: Reflect.construct anywhere, and .bind/.call/.apply on HcClient's class,
+          // or any call handed HcClient's class itself (Function.prototype.bind.call(HcClient, ...)).
+          const receiver = ts.isPropertyAccessExpression(node.expression) ? node.expression : undefined;
+          const viaMethod = receiver && ["bind", "call", "apply"].includes(receiver.name.text) && isHcClientClassType(checker, checker.getTypeAtLocation(receiver.expression));
+          const handedClass = node.arguments.some((a) => isHcClientClassType(checker, checker.getTypeAtLocation(a)));
+          if (isReflectConstruct(decl) || viaMethod || handedClass) out.push({ site: siteOf(node), kind: "reflective", detail: node.expression.getText() });
           calls.push({ node, decl });
         }
       }
@@ -128,7 +170,7 @@ export function censusHcConnections(program: ts.Program, srcRoot: string, propag
     const decl = enclosingDeclaration(node);
     if (decl && !wrapperDecls.has(decl) && propagates(site)) wrapperDecls.set(decl, site);
   };
-  const seed = (kind: CensusSite["kind"]) => kind === "opening" || kind === "unchecked-hc-client" || kind === "require" || kind === "dynamic-import";
+  const seed = (kind: CensusSite["kind"]) => kind === "opening" || kind === "unchecked-hc-client" || kind === "require" || kind === "dynamic-import" || kind === "reflective";
   // Re-walk the recorded openings by node to seed the wrapper set.
   for (const file of files) {
     const visit = (node: ts.Node): void => {

@@ -8,6 +8,17 @@
 //   (B) Every socket opening, require(), computed import() and every call that reaches a wrapper whose classification propagates is a
 //       site, and the set of sites must equal the classified table below. A new one fails here until it is classified.
 // Each of verify-sec's bypasses is a negative row: the finder must catch it in an in-memory program.
+//
+// rt2 round 2 (verify-sec's FAIL at 4bf72e9e1; CoS ruling: one bounded round, a static census serves honest mistakes, not an adversary):
+// a call whose callee RESOLVES to require (an alias included) is a site; node:tls connect, node:http/https Agent createConnection, and
+// node:http/https request/get carrying a socketPath are openings; reflective construction is a site outright (Reflect.construct anywhere,
+// .bind/.call/.apply on HcClient's class, and any call handed the HcClient class itself).
+//
+// THE LIMIT, in words. This census reads source through the type checker; it does not run it. Out of scope: eval and the Function
+// constructor (code built from strings at run time); property names computed at run time (`net[name](...)`, `obj[key]` holding the class);
+// a socketPath an http request only MAY carry because its options are typed as a declared options type (RequestOptions) whose socketPath
+// is optional, with no literal or inferred object that has one; wrappers inside third-party packages (their calls resolve to their own
+// .d.ts); and the CLI, which installs no pin. It catches the honest mistake of reaching the core without the check, not an adversary.
 import fs from "node:fs";
 import nodePath from "node:path";
 import { fileURLToPath } from "node:url";
@@ -149,6 +160,37 @@ describe("the checker finder catches every bypass of the spelling finder (in-mem
     const sites = run(files, { "wrap.ts:checked": { why: "judges its hello", propagates: false }, "wrap.ts:leaves": { why: "caller judges", propagates: true } });
     expect(sites.filter((s) => s.site === "x.ts:h")).toEqual([]);
     caught(sites, "x.ts:i", "wrapper-call");
+  });
+  // verify-sec's FAIL at 4bf72e9e1 (CoS ruling, one bounded round): each listed bypass is a negative row.
+  it("reflective construction: Reflect.construct(HcClient, [...]) is a site outright", () => {
+    caught(run({ "x.ts": `import { HcClient } from "./adapters/hc-client.js";\nexport function k(p: string) { return Reflect.construct(HcClient, [p, 1, false]); }\n` }), "x.ts:k", "reflective");
+  });
+  it("Reflect.construct is a site anywhere in daemon src, whatever class it builds (it cannot be judged statically)", () => {
+    caught(run({ "x.ts": `export function k2(C: new (...args: unknown[]) => object) { return Reflect.construct(C, []); }\n` }), "x.ts:k2", "reflective");
+  });
+  it("reflective construction: HcClient.bind(null, ..., false) is a site", () => {
+    caught(run({ "x.ts": `import { HcClient } from "./adapters/hc-client.js";\nexport function l(p: string) { const Bound = HcClient.bind(null, p, 1, false); return new Bound(); }\n` }), "x.ts:l", "reflective");
+  });
+  it("reflective construction: Function.prototype.bind.call(HcClient, ...) is a site", () => {
+    caught(run({ "x.ts": `import { HcClient } from "./adapters/hc-client.js";\nexport function m(p: string) { const Bound = Function.prototype.bind.call(HcClient, null, p, 1, false); return Bound; }\n` }), "x.ts:m", "reflective");
+  });
+  it("a local alias of require: const req = require; req(\"node:net\").connect is a site", () => {
+    caught(run({ "x.ts": `export function n(p: string) { const req = require; return req("node:net").connect(p); }\n` }), "x.ts:n", "require");
+  });
+  it("node:tls connect({ path }) is an opening", () => {
+    caught(run({ "x.ts": `import tls from "node:tls";\nexport function o(p: string) { return tls.connect({ path: p }); }\n` }), "x.ts:o", "opening");
+  });
+  it("node:http request({ socketPath }) is an opening", () => {
+    caught(run({ "x.ts": `import http from "node:http";\nexport function q(p: string) { return http.request({ socketPath: p, path: "/" }); }\n` }), "x.ts:q", "opening");
+  });
+  it("node:https get({ socketPath }) is an opening, including options held in a variable", () => {
+    caught(run({ "x.ts": `import * as https from "node:https";\nexport function r(p: string) { const options = { socketPath: p, path: "/" }; return https.get(options); }\n` }), "x.ts:r", "opening");
+  });
+  it("an http Agent's createConnection is an opening", () => {
+    caught(run({ "x.ts": `import http from "node:http";\nexport function s(p: string) { return new http.Agent().createConnection({ path: p }); }\n` }), "x.ts:s", "opening");
+  });
+  it("control: an http request to a host and port (no socketPath) is NOT a site", () => {
+    expect(run({ "x.ts": `import http from "node:http";\nexport function u() { return http.request({ host: "example.invalid", port: 80, path: "/" }); }\n` }).filter((s) => s.site.startsWith("x.ts"))).toEqual([]);
   });
   it("controls: the plain checked forms and a local function named connect are NOT sites", () => {
     const sites = run({ "x.ts": `import { HcClient } from "./adapters/hc-client.js";\nexport function j(p: string) { new HcClient(p); new HcClient(p, 5, true); connect(); }\nfunction connect() { return 1; }\n` });
