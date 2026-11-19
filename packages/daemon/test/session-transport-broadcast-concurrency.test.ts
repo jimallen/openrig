@@ -78,7 +78,8 @@ describe("SessionTransport.broadcast", () => {
     expect(new Set(seen.map((c) => c.text)).size, "one envelope for the fan-out (the scale line names every recipient)").toBe(1);
     expect(seen[0]!.text).toContain("From: boss@bc-rig");
     for (const name of sessions(3)) expect(seen[0]!.text).toContain(name);
-    for (const call of seen) expect(call.deliveryId).toBe(`D1:${call.name}`);
+    // workspaces-d7l: the seat's `@` is not in the alphabet a gate marker carries, so the seat is encoded into the id (`markableIdPart`).
+    for (const call of seen) expect(call.deliveryId).toBe(`D1:${call.name.replace("@", "_40")}`);
   });
 
   it("sends to ONE seat stay in order: a seat named twice is delivered to one after the other, in the recipient order", async () => {

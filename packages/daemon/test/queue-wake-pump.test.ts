@@ -201,6 +201,17 @@ describe("a wake on a seat the pump serves", () => {
   });
 
   describe("attemptWake reads the row", () => {
+    // workspaces-d7l: `/queue/create` takes a caller's qitem id as it is, and the nudge's id carries it. Outside the alphabet a gate marker
+    // carries, the nudge skipped the pump and was typed past it.
+    it("d7l: a plain nudge for an item whose caller-chosen id holds `@` goes to the pump under an id a marker carries, and nothing is written", async () => {
+      const { qitemId } = await repo.create({ qitemId: "ask@team-1", sourceSession: "sender@hr", destinationSession: SEAT, body: "the work", nudge: false });
+      await repo.maybeNudge(qitemId, SEAT, true, "sender@hr");
+      await settle();
+      expect(rowsFor(qitemId).map((r) => r.outbox_id)).toEqual([expect.stringMatching(/^guard-nudge-ask_40team-1-[0-9a-f]{64}$/)]);
+      expect(item(qitemId).last_nudge_result).toBe("retained:pump");
+      expect(writes).toEqual([]);
+    });
+
     it("a wake that failed before the seat had a gate is handed over once: one row, then only its state", async () => {
       const { qitemId } = await baton(SEAT);
       db.prepare("DELETE FROM outbox_entries WHERE audit_pointer = ?").run(qitemId);

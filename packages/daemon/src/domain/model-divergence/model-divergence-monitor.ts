@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { inertStartupText } from "../packet-text.js";
+import { markableIdPart } from "../seat-messaging/ports.js";
 import { CANONICAL_MODEL_PINS } from "../spec-validation-advisory.js";
 
 export interface PinnedSeat {
@@ -251,7 +252,7 @@ export class ModelDivergenceMonitor {
   private async deliver(channel: ChannelOutcome["channel"], target: string, message: string, occurrenceId: string): Promise<ChannelOutcome> {
     try {
       // OF-169: system-authored text typed into a seat; SessionTransport.send is unchanged, so strip here.
-      const res = await this.deps.sendToSession(target, inertStartupText(message), `guard-model-${occurrenceId}-${target}`);
+      const res = await this.deps.sendToSession(target, inertStartupText(message), `guard-model-${occurrenceId}-${markableIdPart(target)}`);
       if (res.outcome === "retained") return { channel, target, status: "retained", detail: "Typing guard: retained, not delivered." };
       return res.ok
         ? { channel, target, status: "delivered" }

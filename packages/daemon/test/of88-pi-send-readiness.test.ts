@@ -21,6 +21,15 @@ import { OmpRuntimeAdapter } from "../src/adapters/omp-runtime-adapter.js";
 import { buildPendingRunnerState, piSeatPaths, type PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
 import { RunnerCore, type RunnerIo } from "../src/adapters/pi-runner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { HookSeenStore } from "../src/adapters/hook-seen-store.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { ModelDivergenceMonitor } from "../src/domain/model-divergence/model-divergence-monitor.js";
+import { PumpHandOff } from "../src/domain/seat-messaging/hand-off.js";
+import { MessagePump } from "../src/domain/seat-messaging/message-pump.js";
+import { MessageStore } from "../src/domain/seat-messaging/message-store.js";
+import { MessageObligations } from "../src/domain/seat-messaging/pump-ports.js";
+import { RuntimeSeatPorts } from "../src/domain/seat-messaging/runtime-ports.js";
 
 const SEAT = "dev-pi@my-rig";
 // A reply ending in a question: the pane classifier reads it as a permission prompt.
@@ -122,7 +131,7 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
       agentActivityStore: new AgentActivityStore({ db, eventBus: new EventBus(db) }), eventBus: new EventBus(db), waitForIdlePollMs: 1,
       runnerSendReadiness: runnerSendReadinessFromAdapters(map),
     });
-    return { pi, omp, map, transport, sendText, sendKeys };
+    return { pi, omp, map, transport, sendText, sendKeys, tmux };
   }
   const target = { sessionName: SEAT, nodeId: null };
 
@@ -241,6 +250,67 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     expect(r.error).toContain("runner_starting");
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  /** The pump as startup.ts builds it over this seat: the real ports read the real sidecar. The hop's own input is recorded. */
+  function pumpOn(tmux: TmuxAdapter) {
+    migrate(db, ALL_MIGRATIONS); // the outbox: this file's database is the core-topology one
+    const store = new MessageStore(db);
+    const hopInput = vi.fn(async () => ({ ok: true as const }));
+    const ports = new RuntimeSeatPorts({
+      db, rows: store, hookStore: new HookSeenStore(path.join(dir, "gates")), stateRoots: { pi: stateRoot, omp: path.join(dir, "state", "omp") },
+      client: { call: async () => { throw new Error("no core here"); } }, guard: { operation: (_n, fn) => fn() }, input: { submitText: hopInput, sendKeys: hopInput },
+      inbox: () => ({ eligibility: async () => ({ ok: false, reason: "x" }), writeToSeat: async () => "none", transcriptOf: () => null }), fileIncludes: () => false, rolloutOf: () => null,
+    });
+    const pump = new MessagePump({
+      store, ports, obligations: new MessageObligations(), clock: () => Date.now(), log: () => undefined,
+      directory: { fate: () => ({ kind: "live", occupantGeneration: null }) }, held: { status: () => "held" },
+      senders: { returnToSender: async () => ({ kind: "no_return_path", reason: "none" }) },
+    });
+    tmux.messageHandOff = new PumpHandOff(store, pump, ports);
+    return { pump, hopInput, rows: () => db.prepare("SELECT outbox_id, delivery_state, message_pump_owned FROM outbox_entries WHERE destination_session = ?").all(SEAT) };
+  }
+
+  // workspaces-d7l (verify-qa2 attempt 2): the model monitor's id carried its target, a session name, and `@` is not in the alphabet a gate
+  // marker carries. So its proclamation skipped the pump, refused on the pending launch, and the settled generation never sent it again.
+  it("d7l: the model monitor's proclamation to a seat whose launch is pending goes to the pump and is held, under an id a marker carries; 0 bytes", async () => {
+    fs.writeFileSync(sidecarPath(), JSON.stringify(buildPendingRunnerState("l2", new Date().toISOString(), null)));
+    const { transport, sendText, sendKeys, tmux } = setup("node");
+    const { pump, hopInput, rows } = pumpOn(tmux);
+    const monitor = new ModelDivergenceMonitor({
+      listPinnedSeats: () => [{ nodeId: "n-x", sessionName: "dev-x@other", rigId: "rig-x", rigName: "other", runtime: "codex", pinnedModel: "gpt-a", generation: "g-1" }],
+      readEffectiveModel: () => ({ ok: true as const, model: "gpt-b" }),
+      // As startup.ts wires it.
+      sendToSession: async (to, message, deliveryId) => {
+        const result = await transport.send(to, message, { deliveryId, actorSession: "model-monitor@system", auditPointer: deliveryId, freezeBody: true });
+        return result.ok ? { ok: true, outcome: result.outcome } : { ok: false, error: result.error };
+      },
+      resolveOrchSeats: () => [], resolveOperatorSeat: () => SEAT, resolveOversightSeat: () => null, recordProclamation: () => undefined, warn: () => undefined,
+    });
+    const [proclamation] = await monitor.checkOnce();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await pump.tick();
+    pump.stop();
+    expect(proclamation!.channels.find((c) => c.channel === "operator")).toEqual({ channel: "operator", target: SEAT, status: "retained", detail: "Typing guard: retained, not delivered." });
+    expect(rows()).toEqual([{ outbox_id: expect.stringMatching(/^guard-model-[0-9a-f]{64}-dev-pi_40my-rig$/), delivery_state: "pending", message_pump_owned: 1 }]);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(hopInput).not.toHaveBeenCalled();
+  });
+
+  it("d7l: a fan-out under a caller's id to a seat whose launch is pending goes to the pump and is held, under an id a marker carries; 0 bytes", async () => {
+    fs.writeFileSync(sidecarPath(), JSON.stringify(buildPendingRunnerState("l2", new Date().toISOString(), null)));
+    const { transport, sendText, sendKeys, tmux } = setup("node");
+    const { pump, hopInput, rows } = pumpOn(tmux);
+    const result = await transport.broadcast({ sessions: [SEAT] }, "to all", { envelopeSender: "boss@my-rig", deliveryId: "D1" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await pump.tick();
+    pump.stop();
+    expect(result.results[0]).toMatchObject({ ok: true, reason: "handed_to_pump" });
+    expect(rows()).toEqual([{ outbox_id: "D1:dev-pi_40my-rig", delivery_state: "pending", message_pump_owned: 1 }]);
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(hopInput).not.toHaveBeenCalled();
   });
 
   it("d7l: the runner's own not-ready records are not a pending launch: a transport restart (it ticks) and an exit are no runner answer, as before", async () => {

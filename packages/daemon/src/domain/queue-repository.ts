@@ -12,6 +12,7 @@ import { WAKE_INTENT_PREFIX, labelForTmuxSend, type OutboxHandler, type OutboxOu
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { DEFAULT_SETTINGS, type SettingsReader } from "./user-settings/settings-store.js";
 import type { MessageHandOff } from "./seat-messaging/hand-off.js";
+import { markableIdPart } from "./seat-messaging/ports.js";
 import type { MessageObligations } from "./seat-messaging/pump-ports.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
@@ -1581,7 +1582,7 @@ export class QueueRepository {
         : undefined;
       text = wrapNudgeEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid });
     }
-    const deliveryId = `${PLAIN_NUDGE_PREFIX}${qitemId}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
+    const deliveryId = `${PLAIN_NUDGE_PREFIX}${markableIdPart(qitemId)}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
     const held = !committedOutboxIds ? this.outbox?.getById(deliveryId) : null;
     if (held?.deliveryState === "retained" || held?.deliveryState === "retired") {
       // Same logical nudge reuses its original frozen envelope, not a new timestamp.

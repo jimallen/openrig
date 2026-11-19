@@ -14,6 +14,19 @@ export function messageId(id: string): MessageId {
   return id as MessageId;
 }
 
+/** Free text inside an id the daemon builds (a session name, a caller's qitem id), put into the alphabet a gate marker carries
+ *  (`[A-Za-z0-9._:-]`, `NATIVE_MARKER_RE`). An id outside it can carry no marker, so the transport sends it past the pump (workspaces-d7l:
+ *  `dev@rig` in a model-monitor id). Letters, digits, `.`, `:` and `-` stand; every other UTF-8 byte, `_` included, becomes `_` and two hex
+ *  digits: `dev@rig` is `dev_40rig`. A part already in the alphabet without `_` keeps its bytes, and two different parts never encode alike. */
+export function markableIdPart(text: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(text)) {
+    const ch = String.fromCharCode(byte);
+    out += /[A-Za-z0-9.:-]/.test(ch) ? ch : `_${byte.toString(16).padStart(2, "0")}`;
+  }
+  return out;
+}
+
 /** Content and nudges take an id gate and the pump. A Command (`/compact`, `/clear`) has no marker, is confirmed by its effect and
  *  never by `SeatGate.lookup`, and its retry stays with the enforcer, so the pump never carries one. */
 export type SeatMessageClass = "content" | "nudge" | "lifecycle" | "command";

@@ -22,7 +22,7 @@ export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler, WAKE_INTENT_PREFIX, type SeatMessageClass, type SeatMessageLane } from "./outbox-handler.js";
 import { MessageLedger, mintMessageId } from "./seat-messaging/message-ledger.js";
 import type { MessageHandOff } from "./seat-messaging/hand-off.js";
-import { messageId } from "./seat-messaging/ports.js";
+import { markableIdPart, messageId } from "./seat-messaging/ports.js";
 import { MessageStore } from "./seat-messaging/message-store.js";
 import { describeHeld, describeQueuedForSend, type HeldMessages } from "./seat-messaging/held-messages.js";
 import { queuedListCommand } from "./seat-messaging/queued-messages.js";
@@ -3241,7 +3241,7 @@ export class SessionTransport {
           try {
             // (h) thread the resolved stampISO so send()'s delivered-latency calc measures from the SAME compose stamp the envelope carries.
             results[index] = await this.send(session.sessionName, perRecipientText(session.sessionName), { ...opts, stampISO,
-              deliveryId: opts?.deliveryId ? `${opts.deliveryId}:${session.sessionName}` : undefined });
+              deliveryId: opts?.deliveryId ? `${opts.deliveryId}:${markableIdPart(session.sessionName)}` : undefined });
           } catch (error) {
             failure ??= { error };
             return;
