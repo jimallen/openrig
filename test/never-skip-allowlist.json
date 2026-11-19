@@ -984,6 +984,12 @@
   "when": "process.platform === \"win32\""
  },
  {
+  "file": "packages/daemon/test/runner-interrupt-orphans.real.test.ts",
+  "kind": "skipIf",
+  "task": "an interrupted vitest run leaves none of its private core's processes behind (workspaces-21r; Linux: reads /proc)",
+  "when": "!HC || !hasProcFs()"
+ },
+ {
   "file": "packages/daemon/test/runner-line-echo.real.test.ts",
   "kind": "skipIf",
   "task": "a message cannot rewrite a runner's pane through the line editor, private hc core",
