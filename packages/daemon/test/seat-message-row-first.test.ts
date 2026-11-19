@@ -233,12 +233,13 @@ describe("a seat message's row", () => {
       expect((await post(hono, "/send", { session: SEAT, text: "changed", deliveryId: "job-1" })).status).toBe(409);
     });
 
-    it("a fan-out under a caller's id is `<id>:<seat>` with no Sent stamp, so its repeat is the same bytes", async () => {
+    // workspaces-d7l: the seat is put into the alphabet a gate marker carries (`markableIdPart`): `dev@rig` is `dev_40rig`.
+    it("a fan-out under a caller's id is `<id>:<seat>` (the seat encoded) with no Sent stamp, so its repeat is the same bytes", async () => {
       const hono = app(transport());
       const body = { sessions: [SEAT], text: "hi", deliveryId: "fan-1", envelopeSender: "x" };
       await post(hono, "/broadcast", body);
       await post(hono, "/broadcast", body);
-      expect(rows().map((r) => [r.outbox_id, r.attempts])).toEqual([[`fan-1:${SEAT}`, 2]]);
+      expect(rows().map((r) => [r.outbox_id, r.attempts])).toEqual([["fan-1:dev_40rig", 2]]);
       expect(rows()[0]!.body).not.toContain("Sent:");
     });
   });
