@@ -11,10 +11,10 @@ import { ConfigStore } from "../src/config-store.js";
 import { homeBindRefusal, NO_HOME_BIND_ACTION, resolveHomeDaemon } from "../src/home-daemon-address.js";
 import { runDoctorChecks, type DoctorDeps } from "../src/commands/doctor.js";
 import { SystemPreflight } from "../src/system-preflight.js";
-import { startDaemon } from "../src/daemon-lifecycle.js";
+import { startDaemon, stopDaemon as lifecycleStopDaemon } from "../src/daemon-lifecycle.js";
 import { executeDestroy, type DestroyDeps, type DestroyPlan } from "../src/destroy-helpers.js";
 import { crashCartDaemonTarget } from "../src/commands/crash-cart.js";
-import { destroyCommand } from "../src/commands/destroy.js";
+import { destroyCommand, destroyStopStep } from "../src/commands/destroy.js";
 import { DESTROY_CONFIRM_TOKEN } from "../src/destroy-helpers.js";
 import { Command } from "commander";
 import { DaemonClient } from "../src/client.js";
@@ -358,5 +358,64 @@ describe("o9o.181 with o9o.169: a request refused for a home that names no daemo
     expect(error).toMatchObject({ name: "DaemonConnectionError", provablyNotSent: true });
     expect((error as { writeOutcome?: unknown }).writeOutcome).toBeUndefined();
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("o9o.181 (verify-sec, third review): destroy's stop step never reaches OPENRIG_URL, through the REAL lifecycle stop", () => {
+  const fetchSpy = () => vi.fn(async (_url: string) => { throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" }); });
+  const lifecycle = (fetch: ReturnType<typeof fetchSpy>, state?: string) => asLifecycleDeps({
+    fetch,
+    readFile: (p: string) => (state !== undefined && p.endsWith("daemon.json") ? state : null),
+    exists: (p: string) => state !== undefined && p.endsWith("daemon.json"),
+    isProcessAlive: () => false,
+    kill: vi.fn(),
+  });
+  const destroyWith = async (stop: DestroyDeps["stopDaemon"]) => {
+    const deps: DestroyDeps = {
+      stopDaemon: stop, inspectListener: vi.fn(async () => ({ kind: "unreachable" as const })), findListeningPid: vi.fn(() => null),
+      killProcess: vi.fn(), exists: () => false, renamePath: () => {}, removePath: () => {}, mkdirp: () => {},
+      listManagedTmuxSessions: () => [], listManagedHcSeats: () => [], killHcSeat: async () => "missing",
+      sleep: async () => {}, now: () => new Date("2026-11-19T00:00:00Z"),
+    };
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const program = new Command();
+    program.exitOverride();
+    program.addCommand(destroyCommand({ configStore: stubConfigStore({
+      daemon: { port: 7433, host: "127.0.0.1" }, db: { path: path.join(scratch, "openrig.sqlite") },
+      transcripts: { enabled: true, path: path.join(scratch, "transcripts"), lines: 1000, pollIntervalSeconds: 2 },
+    }), destroyDeps: deps }));
+    await program.parseAsync(["node", "rig", "destroy", "--state", "--yes", "--confirm", DESTROY_CONFIRM_TOKEN]);
+  };
+
+  it("no daemon planned: no stop step runs, so OPENRIG_URL is never fetched (verify-sec's repro)", async () => {
+    vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+    const fetch = fetchSpy();
+    const lc = lifecycle(fetch);
+    // The real lifecycle stop, given the planned endpoint when there is one (the call shape the real wiring uses).
+    const stop = vi.fn(async (endpoint?: { host: string; port: number }) => {
+      await lifecycleStopDaemon(lc, endpoint ? { endpoint: `http://${endpoint.host}:${endpoint.port}` } : {});
+    });
+    await destroyWith(stop);
+    expect(stop).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("the real stop step, given a planned endpoint and no state, checks only that endpoint, never OPENRIG_URL", async () => {
+    vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+    const fetch = fetchSpy();
+    await destroyStopStep(lifecycle(fetch))({ host: "127.0.0.1", port: 28212 }).catch(() => undefined);
+    expect(fetch.mock.calls.length).toBeGreaterThan(0);
+    expect(fetch.mock.calls.every(([url]) => url.startsWith("http://127.0.0.1:28212/"))).toBe(true);
+  });
+
+  it("end to end with a recorded daemon.json: every stop-step probe goes to the recorded endpoint, never OPENRIG_URL", async () => {
+    vi.stubEnv("OPENRIG_URL", "http://127.0.0.1:1");
+    const state = JSON.stringify({ pid: 999999, port: 28213, startedAt: "2026-11-19T00:00:00Z" });
+    fs.writeFileSync(path.join(scratch, "daemon.json"), state); // the plan reads this home's daemon.json
+    const fetch = fetchSpy();
+    await destroyWith(destroyStopStep(lifecycle(fetch, state)));
+    expect(fetch.mock.calls.length).toBeGreaterThan(0);
+    expect(fetch.mock.calls.every(([url]) => url.startsWith("http://127.0.0.1:28213/"))).toBe(true);
   });
 });

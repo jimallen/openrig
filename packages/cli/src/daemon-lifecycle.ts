@@ -907,12 +907,18 @@ function removeMatchingState(deps: LifecycleDeps, stateFile: string, state: Daem
     && current.host === state.host && current.db === state.db) deps.removeFile(stateFile);
 }
 
-export async function stopDaemon(deps: LifecycleDeps): Promise<"stopped" | "no-target"> {
+/**
+ * `endpoint`: workspaces-o9o.181 (verify-sec, third review): rig destroy passes the one endpoint it planned. Then OPENRIG_URL is
+ * ignored (destroy works on local state only) and that endpoint is the only address checked; a recorded state at another
+ * origin is refused with no signal. Without it (`rig daemon stop`) nothing changes.
+ */
+export async function stopDaemon(deps: LifecycleDeps, opts: { endpoint?: string } = {}): Promise<"stopped" | "no-target"> {
   // Every stop path comes through here (the daemon verb `stop`, and `rig destroy`): a seat stops none (seat-daemon-guard.ts).
   const refusal = seatDaemonControlRefusal("stop");
   if (refusal !== null) throw new Error(refusal);
   const state = readState(deps);
-  const explicitUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
+  const planned = opts.endpoint?.replace(/\/+$/, "");
+  const explicitUrl = planned ?? readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
   // workspaces-o9o.181: a non-default home that names no daemon has nothing to stop; never probe the default address.
   const configured = resolveConfiguredDaemonTarget();
   if (!state && !explicitUrl && "none" in configured) return "no-target";

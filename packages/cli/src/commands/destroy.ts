@@ -19,7 +19,7 @@ import {
   type DestroyRuntimeConfig,
   type DestroyScope,
 } from "../destroy-helpers.js";
-import { stopDaemon } from "../daemon-lifecycle.js";
+import { stopDaemon, type LifecycleDeps } from "../daemon-lifecycle.js";
 import { seatCommandRefusal } from "../seat-daemon-guard.js";
 
 export interface DestroyCommandDeps {
@@ -101,10 +101,17 @@ function resolveRuntimeConfig(configStore: Pick<ConfigStore, "resolve">): Resolv
   }
 }
 
+/** workspaces-o9o.181: destroy's stop step: the real lifecycle stop, at exactly the planned endpoint (never OPENRIG_URL). */
+export function destroyStopStep(lifecycleDeps: LifecycleDeps): DestroyDeps["stopDaemon"] {
+  return async (endpoint) => {
+    await stopDaemon(lifecycleDeps, { endpoint: `http://${formatDaemonHostForUrl(endpoint.host)}:${endpoint.port}` });
+  };
+}
+
 function realDestroyDeps(): DestroyDeps {
   const lifecycleDeps = realDeps();
   return {
-    stopDaemon: async () => { await stopDaemon(lifecycleDeps); },
+    stopDaemon: destroyStopStep(lifecycleDeps),
     inspectListener: async (host: string, port: number): Promise<ListenerInspection> => {
       try {
         const res = await fetch(`http://${formatDaemonHostForUrl(host)}:${port}/healthz`);

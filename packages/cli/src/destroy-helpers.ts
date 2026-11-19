@@ -73,7 +73,9 @@ export interface ListenerInspection {
 }
 
 export interface DestroyDeps {
-  stopDaemon: () => Promise<void>;
+  /** workspaces-o9o.181: stops the planned daemon at exactly this endpoint (never OPENRIG_URL). Called only when a daemon is
+   *  planned; a plan with no daemon runs no stop step at all. */
+  stopDaemon: (endpoint: { host: string; port: number }) => Promise<void>;
   inspectListener: (host: string, port: number) => Promise<ListenerInspection>;
   findListeningPid: (port: number) => number | null;
   killProcess: (pid: number) => void;
@@ -251,45 +253,48 @@ export async function executeDestroy(plan: DestroyPlan, deps: DestroyDeps): Prom
     };
   }
 
-  try {
-    await deps.stopDaemon();
-  } catch (err) {
-    warnings.push(`stopDaemon failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
   let daemonStopped = false;
   let portCleared = false;
 
   if (plan.noDaemon !== undefined) {
-    // workspaces-o9o.181: this home names no daemon, so it holds no port: nothing is probed or signalled.
+    // workspaces-o9o.181: this home names no daemon, so it holds no port: no stop step runs, and nothing is probed or
+    // signalled (verify-sec, third review: the stop step used to run first, and the real one probes OPENRIG_URL).
     warnings.push(`This OPENRIG_HOME names no daemon of its own; no listener was probed or signalled. ${plan.noDaemon}`);
     portCleared = true;
-  } else if (isLocalHost(plan.daemonHost)) {
-    const before = await deps.inspectListener(plan.daemonHost, plan.daemonPort);
-    if (before.kind === "openrig") {
-      const listenerPid = deps.findListeningPid(plan.daemonPort);
-      if (listenerPid !== null) {
-        try {
-          deps.killProcess(listenerPid);
-        } catch (err) {
-          warnings.push(`Failed to terminate listener pid ${listenerPid}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          if ((await deps.inspectListener(plan.daemonHost, plan.daemonPort)).kind === "unreachable") break;
-          await deps.sleep(100);
-        }
-      } else {
-        warnings.push(`OpenRig responded on port ${plan.daemonPort}, but no listener pid was found.`);
-      }
-    } else if (before.kind === "other_http") {
-      warnings.push(`Port ${plan.daemonPort} is occupied by a live non-OpenRig HTTP listener. State was left untouched.`);
-    }
-
-    const after = await deps.inspectListener(plan.daemonHost, plan.daemonPort);
-    portCleared = after.kind === "unreachable";
-    daemonStopped = portCleared;
   } else {
-    warnings.push(`Daemon host ${plan.daemonHost} is not local. rig destroy only operates on local daemon targets; state was left untouched.`);
+    // The stop step gets only the planned endpoint, never OPENRIG_URL.
+    try {
+      await deps.stopDaemon({ host: plan.daemonHost, port: plan.daemonPort });
+    } catch (err) {
+      warnings.push(`stopDaemon failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (isLocalHost(plan.daemonHost)) {
+      const before = await deps.inspectListener(plan.daemonHost, plan.daemonPort);
+      if (before.kind === "openrig") {
+        const listenerPid = deps.findListeningPid(plan.daemonPort);
+        if (listenerPid !== null) {
+          try {
+            deps.killProcess(listenerPid);
+          } catch (err) {
+            warnings.push(`Failed to terminate listener pid ${listenerPid}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            if ((await deps.inspectListener(plan.daemonHost, plan.daemonPort)).kind === "unreachable") break;
+            await deps.sleep(100);
+          }
+        } else {
+          warnings.push(`OpenRig responded on port ${plan.daemonPort}, but no listener pid was found.`);
+        }
+      } else if (before.kind === "other_http") {
+        warnings.push(`Port ${plan.daemonPort} is occupied by a live non-OpenRig HTTP listener. State was left untouched.`);
+      }
+
+      const after = await deps.inspectListener(plan.daemonHost, plan.daemonPort);
+      portCleared = after.kind === "unreachable";
+      daemonStopped = portCleared;
+    } else {
+      warnings.push(`Daemon host ${plan.daemonHost} is not local. rig destroy only operates on local daemon targets; state was left untouched.`);
+    }
   }
 
   if (!portCleared) {
