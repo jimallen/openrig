@@ -18,7 +18,7 @@ import type { HcClient, HcTerminal } from "../src/adapters/hc-client.js";
 import { HcHost, hcTerminalName } from "../src/adapters/hc-host.js";
 import { HcInput, type HcShellCommandOptions } from "../src/adapters/hc-input.js";
 import { HC, PrivateCore } from "./hc-private-core.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 const SHELLS = ["/bin/zsh", "/bin/bash"].filter((candidate) => existsSync(candidate));
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,12 +54,11 @@ const SHAPES: Record<Shape, { options: HcShellCommandOptions; why: string }> = {
 };
 
 async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, what: string, ms = 15_000): Promise<T> {
-  const waitStarted = Date.now();
-  const deadline = Date.now() + ms;
+  const bound = waitBound(ms);
   for (;;) {
     const value = await read();
     if (accept(value)) return value;
-    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`timed out waiting for ${what}`, bound);
     await wait(50);
   }
 }

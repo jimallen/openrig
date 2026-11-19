@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // M1 A4a — REAL-SPAWN liveness proof. The lessons idle-process-needs-refd-handle +
 // in-memory-test-path-hides-real-spawn-bugs are explicit: an in-process test CANNOT prove a
@@ -50,10 +50,10 @@ const closeStub = (s: Stub): Promise<void> => new Promise((res) => {
 });
 function waitFor(pred: () => boolean, ms = 10000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    const bound = waitBound(ms);
     const iv = setInterval(() => {
       if (pred()) { clearInterval(iv); resolve(); }
-      else if (Date.now() - start > ms) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", start)); }
+      else if (bound.expired()) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", bound)); }
     }, 25);
   });
 }

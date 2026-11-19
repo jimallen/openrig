@@ -7,13 +7,17 @@
 //   1. a `throw` inside a loop, under an `if` whose condition reads the clock (`Date.now()`, `performance.now()`);
 //   2. a `throw` straight after a loop that sleeps between checks (`setTimeout`, `sleep`) or whose own condition reads the clock;
 //   3. a `reject(...)` inside a `setInterval` callback, under an `if` whose condition reads the clock.
-// A give-up must throw (or reject with) `waitTimedOut(...)`. A give-up that rethrows a caught value as it is (`throw error`) hands back
+// (A WaitBound's `expired()` reads the clock too.)
+// A give-up must throw (or reject with) `waitTimedOut(...)`, and (workspaces-o9o.174 part 3) its guard or its loop must ask a WaitBound
+// (`bound.expired()`, `bound.attempts(n)`), whose bound scales with the measured load; a raw clock comparison or a fixed count is
+// "unscaled". A give-up that rethrows a caught value as it is (`throw error`) hands back
 // the failure the wait last saw, an assertion's diff or a command's own error; those are listed by name below, so a new one is a
 // decision and not a silent pass.
 // Excluded as a class: one-shot setTimeout rejects are not censused. A `setTimeout(() => reject(...))` watchdog has no structure that
 // tells it apart from a fake that simulates a slow dependency (hc-seat-terminal-status's "late", plugin-vendor-service's "timeout").
 // The real ones known on 2026-11-19 were converted by hand (CoS ruling, verify-qa round 2): ps-summary-stall-red, slow-op-recorder,
-// helpers/scenario-surfaces and staging-docker-invoker's "parent did not end". A new one is not caught here.
+// helpers/scenario-surfaces and staging-docker-invoker's "parent did not end"; each sets its timer to its bound's scaled `bound.ms`.
+// A new one is not caught here.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,42 +43,54 @@ function contains(node: ts.Node, match: (n: ts.Node) => boolean): boolean {
 const callsNamed = (n: ts.Node, names: readonly string[]): boolean => ts.isCallExpression(n)
   && ((ts.isIdentifier(n.expression) && names.includes(n.expression.text))
     || (ts.isPropertyAccessExpression(n.expression) && names.includes(n.expression.name.text)));
+/** Reads the clock: `Date.now()`, `performance.now()`, or a WaitBound's `expired()` (which compares the clock with its deadline). */
 const readsClock = (n: ts.Node): boolean => contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
-  && x.expression.name.text === "now");
+  && (x.expression.name.text === "now" || x.expression.name.text === "expired"));
+/** Asks a WaitBound (workspaces-o9o.174 part 3): `bound.expired()` or `bound.attempts(n)`, the bound scaled by the measured load. */
+const asksBound = (n: ts.Node | undefined): boolean => !!n && contains(n, (x) => ts.isCallExpression(x)
+  && ts.isPropertyAccessExpression(x.expression) && (x.expression.name.text === "expired" || x.expression.name.text === "attempts"));
+const loopCondition = (loop: ts.IterationStatement): ts.Node | undefined =>
+  ts.isForStatement(loop) ? loop.condition : ts.isWhileStatement(loop) || ts.isDoStatement(loop) ? loop.expression : undefined;
 const sleeps = (n: ts.Node): boolean => contains(n, (x) => callsNamed(x, ["setTimeout", "sleep"]));
 const isLoop = (n: ts.Node): n is ts.IterationStatement => ts.isIterationStatement(n, false);
 
-/** Walks up from `n` to the nearest loop (or `stop`) inside the same function; whether a clock-reading `if` guarded it on the way. */
-function clockGuarded(n: ts.Node, stop: (p: ts.Node) => boolean): boolean {
-  let guarded = false;
+/** Walks up from `n` to the nearest loop (or `stop`) inside the same function; the clock-reading `if` conditions that guarded it on
+ *  the way (none: not a clock-guarded give-up). */
+function clockGuards(n: ts.Node, stop: (p: ts.Node) => boolean): ts.Expression[] {
+  const guards: ts.Expression[] = [];
   for (let p = n.parent; p; p = p.parent) {
-    if (ts.isIfStatement(p) && readsClock(p.expression)) guarded = true;
-    if (stop(p)) return guarded;
-    if (ts.isFunctionLike(p)) return false;
+    if (ts.isIfStatement(p) && readsClock(p.expression)) guards.push(p.expression);
+    if (stop(p)) return guards;
+    if (ts.isFunctionLike(p)) return [];
   }
-  return false;
+  return [];
 }
 const isIntervalCallback = (p: ts.Node): boolean => ts.isFunctionLike(p) && ts.isCallExpression(p.parent) && callsNamed(p.parent, ["setInterval"]);
 
-export interface WaitGiveUp { at: string; kind: "evidenced" | "rethrow" | "bare" }
+/** evidenced: throws waitTimedOut with a bound scaled by load; unscaled: throws waitTimedOut but its guard or loop compares the raw
+ *  clock or a fixed count instead of asking the bound (part 3); rethrow: hands back a caught failure as it is; bare: any other Error. */
+export interface WaitGiveUp { at: string; kind: "evidenced" | "unscaled" | "rethrow" | "bare" }
 
 /** Every wait give-up in `files` (name → source), classified by what it throws. */
 export function waitGiveUps(files: Record<string, string>): WaitGiveUp[] {
   return Object.entries(files).flatMap(([file, text]) => {
     const src = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     const out: WaitGiveUp[] = [];
-    const record = (site: ts.Node, error: ts.Expression | undefined): void => {
+    const record = (site: ts.Node, error: ts.Expression | undefined, scaled: boolean): void => {
       const kind = error && ts.isCallExpression(error) && ts.isIdentifier(error.expression) && error.expression.text === "waitTimedOut"
-        ? "evidenced" : error && ts.isIdentifier(error) ? "rethrow" : "bare";
+        ? (scaled ? "evidenced" : "unscaled") : error && ts.isIdentifier(error) ? "rethrow" : "bare";
       out.push({ at: `${file}:${src.getLineAndCharacterOfPosition(site.getStart(src)).line + 1}`, kind });
     };
     const visit = (n: ts.Node): void => {
       if (ts.isThrowStatement(n)) {
         const holder = n.parent;
         const before = ts.isBlock(holder) || ts.isSourceFile(holder) ? holder.statements[holder.statements.indexOf(n) - 1] : undefined;
-        if (clockGuarded(n, isLoop) || (before && isLoop(before) && (sleeps(before) || readsClock(before)))) record(n, n.expression);
-      } else if (callsNamed(n, ["reject"]) && clockGuarded(n, isIntervalCallback)) {
-        record(n, (n as ts.CallExpression).arguments[0]);
+        const guards = clockGuards(n, isLoop);
+        if (guards.length > 0) record(n, n.expression, guards.some(asksBound));
+        else if (before && isLoop(before) && (sleeps(before) || readsClock(before))) record(n, n.expression, asksBound(loopCondition(before)));
+      } else if (callsNamed(n, ["reject"])) {
+        const guards = clockGuards(n, isIntervalCallback);
+        if (guards.length > 0) record(n, (n as ts.CallExpression).arguments[0], guards.some(asksBound));
       }
       ts.forEachChild(n, visit);
     };
@@ -86,10 +102,14 @@ export function waitGiveUps(files: Record<string, string>): WaitGiveUp[] {
 const at = (rows: WaitGiveUp[], kind: WaitGiveUp["kind"]): string[] => rows.filter((r) => r.kind === kind).map((r) => r.at);
 
 describe("workspaces-o9o.179: no daemon test wait gives up without its evidence", () => {
-  it("the scanner finds each give-up shape and tells waitTimedOut, a rethrow and a bare Error apart (its own controls)", () => {
+  it("the scanner finds each give-up shape and tells a scaled waitTimedOut, an unscaled one, a rethrow and a bare Error apart (its own controls)", () => {
     const rows = waitGiveUps({
       "clock.ts": "async function w() { const end = Date.now() + 9; for (;;) { if (ok()) return; if (Date.now() > end) throw new Error(`x`); await nap(); } }",
-      "evidenced.ts": "async function w() { const end = Date.now() + 9; for (;;) { if (Date.now() > end) throw waitTimedOut(`x`, s); await nap(); } }",
+      "evidenced.ts": "async function w() { const bound = waitBound(9); for (;;) { if (bound.expired()) throw waitTimedOut(`x`, bound); await nap(); } }",
+      "unscaled.ts": "async function w() { const end = Date.now() + 9; for (;;) { if (Date.now() > end) throw waitTimedOut(`x`, b); await nap(); } }",
+      "counted-scaled.ts": "async function w() {\n  for (let i = 0; i < bound.attempts(9); i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "counted-fixed.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "interval-scaled.ts": "new Promise((resolve, reject) => { setInterval(() => { if (bound.expired()) reject(waitTimedOut('x', bound)); }, 5); });",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
       "interval.ts": "new Promise((resolve, reject) => { const iv = setInterval(() => { if (ok()) resolve(); else if (Date.now() - s > 9) reject(new Error('x')); }, 5); });",
@@ -102,6 +122,10 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
     expect(rows).toEqual([
       { at: "clock.ts:1", kind: "bare" },
       { at: "evidenced.ts:1", kind: "evidenced" },
+      { at: "unscaled.ts:1", kind: "unscaled" },
+      { at: "counted-scaled.ts:3", kind: "evidenced" },
+      { at: "counted-fixed.ts:3", kind: "unscaled" },
+      { at: "interval-scaled.ts:1", kind: "evidenced" },
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
       { at: "interval.ts:1", kind: "bare" },
@@ -125,6 +149,7 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
     expect(Object.keys(files).length).toBeGreaterThan(1000);   // the population scanned, so a clean result is not an empty walk
     const rows = waitGiveUps(files);
     expect(at(rows, "bare")).toEqual([]);
+    expect(at(rows, "unscaled")).toEqual([]);   // part 3: every give-up asks a load-scaled bound, never the raw clock or a fixed count
     expect(at(rows, "evidenced").length).toBeGreaterThanOrEqual(40);   // the give-ups found, so a clean result is not a blind scanner
     // Rethrows hand back the failure the wait last saw (an assertion's diff; the CLI's own error after its retries), kept as it is.
     expect(at(rows, "rethrow").sort()).toEqual(["helpers/eval-rig-session.ts:285", "pi-usage-cost.test.ts:168"]);

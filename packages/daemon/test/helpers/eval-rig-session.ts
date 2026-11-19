@@ -39,7 +39,7 @@
 
 import { execFile } from "node:child_process";
 import type { RigSeatSession } from "./eval-rig-provider.js";
-import { waitTimedOut } from "./wait-timeout.js";
+import { waitBound, waitTimedOut } from "./wait-timeout.js";
 
 export type RigExec = (args: string[]) => Promise<string>;
 
@@ -389,7 +389,7 @@ export function createRigCliSession(options: RigCliSessionOptions): { spawn: () 
           await withRetry(() => exec(["send", "--raw", sessionName, prompt]));
         },
         async captureSince(_prompt: string): Promise<string> {
-          const deadline = Date.now() + timeoutMs;
+          const bound = waitBound(timeoutMs);
           const failures = { n: 0 };
           // JSONL-SCHEMA-AWARE capture (harness correction; RED pins b4d8d1797 + desk pins 4-5):
           // poll the append-only record and PARSE the suffix since the pre-send content as message
@@ -397,10 +397,9 @@ export function createRigCliSession(options: RigCliSessionOptions): { spawn: () 
           // carries a TERMINAL stop_reason — never content-stability (the 80-byte-footer bug). The
           // graded value is assistant/tool OUTPUT TEXT ONLY — never the user prompt, never the JSON
           // envelope. Custody is enforced per-case: an intervening user input fails the case closed.
-          const waitStarted = Date.now();
           for (;;) {
-            if (Date.now() > deadline) {
-              throw waitTimedOut(`captureSince: seat '${sessionName}' did not complete a native turn within ${timeoutMs}ms (no terminal stop_reason observed; did not go stable is retired as a done-signal)`, waitStarted);
+            if (bound.expired()) {
+              throw waitTimedOut(`captureSince: seat '${sessionName}' did not complete a native turn within ${timeoutMs}ms (no terminal stop_reason observed; did not go stable is retired as a done-signal)`, bound);
             }
             await sleep(pollMs);
             const rec = await tolerantRead(failures);

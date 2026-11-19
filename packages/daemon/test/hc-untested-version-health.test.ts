@@ -12,7 +12,7 @@ import { HcCoreRefusalHealthSource } from "../src/domain/hc-core-refusal-health.
 import { HcUntestedVersionHealthSource } from "../src/domain/hc-untested-version-health.js";
 import type { HealthSourceCoverage } from "../src/domain/health-detectors.js";
 import { createDaemon } from "../src/startup.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Far from the wall clock, so a source that read Date.now() instead of its clock shows up.
 const T0 = new Date("2031-03-04T05:00:00.000Z");
@@ -85,10 +85,9 @@ class ScriptedCore {
 }
 
 const until = async (check: () => boolean, what: string, ms = 8000) => {
-  const waitStarted = Date.now();
-  const deadline = Date.now() + ms;
+  const bound = waitBound(ms);
   while (!check()) {
-    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`timed out waiting for ${what}`, bound);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 };

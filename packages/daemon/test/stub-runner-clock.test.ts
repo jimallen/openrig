@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — the stub runner's OWN clock honors the injected clock.
 //
@@ -23,9 +23,8 @@ const INJECTED_ISO = "2021-06-06T06:06:06.000Z";
 
 async function waitForSidecar(dir: string, timeoutMs = 8000): Promise<Record<string, unknown>> {
   const p = join(dir, SIDECAR_SUBPATH);
-  const deadline = Date.now() + timeoutMs;
+  const bound = waitBound(timeoutMs);
   // eslint-disable-next-line no-constant-condition
-  const waitStarted = Date.now();
   while (true) {
     if (existsSync(p)) {
       try {
@@ -33,7 +32,7 @@ async function waitForSidecar(dir: string, timeoutMs = 8000): Promise<Record<str
         if (parsed && parsed.ready === true) return parsed;
       } catch { /* mid-write torn read; retry */ }
     }
-    if (Date.now() > deadline) throw waitTimedOut(`sidecar not ready within ${timeoutMs}ms: ${p}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`sidecar not ready within ${timeoutMs}ms: ${p}`, bound);
     await new Promise((r) => setTimeout(r, 50));
   }
 }

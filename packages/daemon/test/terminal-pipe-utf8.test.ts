@@ -9,18 +9,17 @@ import { HcViewer } from "../src/adapters/hc-viewer.js";
 import { TerminalSessionBroker, type TerminalSubscriber } from "../src/terminal/TerminalSessionBroker.js";
 import { isStreamHost } from "../src/terminal/HcStreamSession.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 const EXPECTED = "UTF8_START:🚀 café 中文 :UTF8_END";
 
 /** Polls until `read` answers what `ok` accepts; the ceiling only bounds a genuine hang. */
 async function until<T>(read: () => T, ok: (value: T) => boolean, what: string, timeoutMs = 15_000): Promise<T> {
-  const waitStarted = Date.now();
-  const deadline = Date.now() + timeoutMs;
+  const bound = waitBound(timeoutMs);
   for (;;) {
     const value = read();
     if (ok(value)) return value;
-    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`timed out waiting for ${what}`, bound);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }

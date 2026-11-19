@@ -19,7 +19,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { seedHostShaped } from "./helpers/seed-host-shaped.js";
 import { buildStallApp } from "./fixtures/ps-stall-http-child.js";
 import { HEALTHZ_RESPONSIVENESS_BUDGET_MS } from "../src/domain/event-loop-monitor.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -196,8 +196,8 @@ describe("slice-04 ps/summary event-loop regression", () => {
       });
 
       port = await new Promise<number>((resolve, reject) => {
-        const waitStarted = Date.now();
-        const to = setTimeout(() => reject(waitTimedOut("no READY within 150s; stderr=" + err, waitStarted)), 150_000);
+        const bound = waitBound(150_000);
+        const to = setTimeout(() => reject(waitTimedOut("no READY within 150s; stderr=" + err, bound)), bound.ms);
         child!.stdout!.on("data", () => {
           const m = out.match(/READY (\d+)/);
           if (m) { clearTimeout(to); resolve(Number(m[1])); }

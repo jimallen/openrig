@@ -9,12 +9,12 @@ import {hcTerminalName,SEAT_LABEL} from '../src/adapters/hc-host.js';
 import {HcInput} from '../src/adapters/hc-input.js';
 import type {TmuxFileOps} from '../src/adapters/tmux.js';
 import {findHc,startHcScratch,type HcScratch} from './helpers/hc-scratch.js';
-import { waitTimedOut } from './helpers/wait-timeout.js';
+import { waitBound, waitTimedOut } from './helpers/wait-timeout.js';
 const q=(v:string)=>"'"+v.replaceAll("'","'\"'\"'")+"'";
 // A marker file counts as written only once it has content. PROMPT_COMMAND's `echo "$?" > status` and the rc's
 // `printf ... > before` truncate before they write, so waiting on existsSync alone can read "" (Number("") === 0).
 const filled=(p:string)=>{try{return fs.readFileSync(p,'utf8')!=='';}catch{return false;}};
-async function until(f:()=>boolean){const waitStarted = Date.now(); for(let i=0;i<240;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw waitTimedOut('private pane did not produce receipt', waitStarted);}
+async function until(f:()=>boolean){const bound = waitBound(240 * 25); for (let i=0;i<bound.attempts(240);i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw waitTimedOut('private pane did not produce receipt', bound);}
 let scratch:HcScratch;
 describe.skipIf(!findHc() || !fs.existsSync('/bin/bash'))('classic Claude pane-shell isolation (hc seat)',()=>{
 beforeAll(()=>{scratch=startHcScratch();},60000);

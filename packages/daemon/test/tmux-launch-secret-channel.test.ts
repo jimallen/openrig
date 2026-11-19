@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { HcAdapter } from "../src/adapters/hc-adapter.js";
 import { hcTerminalName } from "../src/adapters/hc-host.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // OF-46. The activity-hook token (and every provider key) is a credential. A process's command line is readable by every local user
 // through `ps`, and a core that keeps its clients' argv would keep it. These tests pin the consequence on hc: no process the adapter
@@ -31,12 +31,11 @@ const LAUNCH_ENV = {
 };
 
 async function until(read: () => string | undefined, ms = 10_000): Promise<string> {
-  const waitStarted = Date.now();
-  const end = Date.now() + ms;
+  const bound = waitBound(ms);
   for (;;) {
     const v = read();
     if (v) return v;
-    if (Date.now() > end) throw waitTimedOut("timed out waiting for the seat", waitStarted);
+    if (bound.expired()) throw waitTimedOut("timed out waiting for the seat", bound);
     await new Promise(r => setTimeout(r, 50));
   }
 }

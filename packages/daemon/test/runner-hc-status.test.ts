@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { RunnerCore, type RunnerIo } from "../src/adapters/pi-runner.js";
 import { createRunnerHcStatusSink, hcAppNameForSeat, hcStateForActivity, hcStatusRecord, type RunnerHcState } from "../src/adapters/runner-hc-status.js";
 import { makeRig, runEnd, runStart, snapshotEvent } from "./helpers/pda-runner-rig.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Restated here on purpose (not imported from the module): the wire form hc was measured to accept, spike-hc-1-2 section 2.3.
 const OSC = (state: string, app: string) => `\u001b]7501;state=${state}:app=${app}\u001b\\`;
@@ -184,10 +184,9 @@ describe("the pda runner", () => {
 });
 
 async function until(cond: () => boolean): Promise<void> {
-  const end = Date.now() + 5000;
-  const waitStarted = Date.now();
+  const bound = waitBound(5000);
   while (!cond()) {
-    if (Date.now() > end) throw waitTimedOut("timed out", waitStarted);
+    if (bound.expired()) throw waitTimedOut("timed out", bound);
     await new Promise((r) => setTimeout(r, 5));
   }
 }

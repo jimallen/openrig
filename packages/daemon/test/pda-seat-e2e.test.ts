@@ -44,7 +44,7 @@ import { startFakePda, nonAllowlisted, type FakePda } from "./helpers/fake-pda.j
 import { assistantEntry, assistantMessage, deltaEvent, messageEnd, messageStart, runEnd, runStart } from "./helpers/pda-real-shapes.js";
 import { parsePdaRunnerState, pdaSeatPaths, type PdaRunnerState } from "../src/adapters/pda-runner-protocol.js";
 import { claimTestPort } from "./helpers/test-ports.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rigBin = resolve(here, "../../cli/dist/bin-wrapper.js");
@@ -61,15 +61,14 @@ const STUB_SEAT = "dev-qa@dev-pair-stub";
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 async function until<T>(what: string, probe: () => T | Promise<T>, ms = 30_000): Promise<NonNullable<T>> {
-  const end = Date.now() + ms;
+  const bound = waitBound(ms);
   let last: unknown;
-  const waitStarted = Date.now();
   for (;;) {
     try {
       const v = await probe();
       if (v) return v as NonNullable<T>;
     } catch (e) { last = e; }
-    if (Date.now() > end) throw waitTimedOut(`timed out after ${ms} ms waiting for: ${what}${last ? ` (last error: ${String(last)})` : ""}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`timed out after ${ms} ms waiting for: ${what}${last ? ` (last error: ${String(last)})` : ""}`, bound);
     await sleep(100);
   }
 }

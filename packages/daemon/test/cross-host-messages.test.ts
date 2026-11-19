@@ -28,7 +28,7 @@ import { tmuxStub } from "./helpers/tmux-stub.js";
 import { DbSeatDirectory } from "../src/domain/seat-messaging/seat-directory.js";
 import type { HostDirectory } from "../src/domain/seat-messaging/reply-path.js";
 import { wrapPaneEnvelope } from "../src/lib/pane-envelope.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 import { HttpRemoteDaemonClient } from "../src/adapters/remote-daemon-http.js";
 
 const FAR_SEAT = "dev@far";
@@ -36,9 +36,9 @@ const LOCAL_SENDER = "lead@near";
 const NEAR = "near-host";
 const FAST = { tickMs: 5, pauseRecheckMs: 5, backoffMs: [1, 1, 1] };
 const until = async (check: () => boolean, what: string) => {
-  const waitStarted = Date.now();
-  for (let i = 0; i < 400; i++) { if (check()) return; await new Promise((r) => setTimeout(r, 5)); }
-  throw waitTimedOut(`timed out: ${what}`, waitStarted);
+  const bound = waitBound(400 * 5);
+  for (let i = 0; i < bound.attempts(400); i++) { if (check()) return; await new Promise((r) => setTimeout(r, 5)); }
+  throw waitTimedOut(`timed out: ${what}`, bound);
 };
 const rowOf = (db: Database.Database, id: string) => db.prepare("SELECT * FROM outbox_entries WHERE outbox_id = ?").get(id) as Record<string, unknown> | undefined;
 const rowCount = (db: Database.Database) => (db.prepare("SELECT count(*) AS n FROM outbox_entries").get() as { n: number }).n;

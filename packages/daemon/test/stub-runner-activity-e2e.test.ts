@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — R2 real-spawn proof: the WIRED runner actually POSTs the
 // canonical activity event set over the WIRE to /api/activity/hooks. The hermetic
@@ -23,12 +23,11 @@ const INJECTED_ISO = "2021-06-06T06:06:06.000Z";
 interface Captured { body: Record<string, unknown>; auth: string | undefined; url: string | undefined }
 
 async function waitFor(pred: () => boolean, timeoutMs = 12_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const bound = waitBound(timeoutMs);
   // eslint-disable-next-line no-constant-condition
-  const waitStarted = Date.now();
   while (true) {
     if (pred()) return;
-    if (Date.now() > deadline) throw waitTimedOut(`condition not met within ${timeoutMs}ms`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`condition not met within ${timeoutMs}ms`, bound);
     await new Promise((r) => setTimeout(r, 50));
   }
 }

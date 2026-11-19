@@ -11,7 +11,7 @@ import {
   type CapabilityDescriptor,
   type OutboundDecision,
 } from "../src/domain/gateway/protocol.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // M1 A4a — proof-9 over a REAL unix socket (not an in-memory sink): the gateway out-dials a
 // stub connector, exchanges newline-framed JSON, and we prove:
@@ -75,10 +75,10 @@ const closeStub = (s: Stub): Promise<void> => new Promise((res) => {
 });
 function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    const bound = waitBound(ms);
     const iv = setInterval(() => {
       if (pred()) { clearInterval(iv); resolve(); }
-      else if (Date.now() - start > ms) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", start)); }
+      else if (bound.expired()) { clearInterval(iv); reject(waitTimedOut("waitFor timeout", bound)); }
     }, 10);
   });
 }

@@ -10,17 +10,16 @@ import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { HcInput } from "../src/adapters/hc-input.js";
 import type { TmuxFileOps } from "../src/adapters/tmux.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
 let zshPath = "";
 try { zshPath = execFileSync("sh", ["-c", "command -v zsh"], { encoding: "utf8" }).trim(); } catch { /* no zsh: the suite skips */ }
 // A condition wait: it resolves the moment `f` holds. The ceiling only bounds a genuine hang (the old 5 s one was overrun on a loaded host).
 async function until(f: () => boolean | Promise<boolean>, what: string) {
-  const waitStarted = Date.now();
-  const deadline = Date.now() + 30_000;
+  const bound = waitBound(30_000);
   while (!(await f())) {
-    if (Date.now() > deadline) throw waitTimedOut(`timed out waiting for ${what}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`timed out waiting for ${what}`, bound);
     await new Promise(r => setTimeout(r, 25));
   }
 }

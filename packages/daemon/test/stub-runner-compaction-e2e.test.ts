@@ -6,7 +6,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildStubTranscript } from "../src/adapters/stub-runner.js";
 import type { StubScript } from "../src/adapters/stub-script.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — R1 real-spawn proof: the WIRED runner executes a scenario
 // script and its `emit compaction` step FIRES the exact shipped precompact seam,
@@ -23,12 +23,11 @@ const SEAT = "dev-worker@compaction-e2e";
 const SANITIZED = SEAT.replace(/[^a-zA-Z0-9_.@-]/g, "_");
 
 async function waitForFile(p: string, timeoutMs = 12_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const bound = waitBound(timeoutMs);
   // eslint-disable-next-line no-constant-condition
-  const waitStarted = Date.now();
   while (true) {
     if (existsSync(p)) return;
-    if (Date.now() > deadline) throw waitTimedOut(`file not produced within ${timeoutMs}ms: ${p}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`file not produced within ${timeoutMs}ms: ${p}`, bound);
     await new Promise((r) => setTimeout(r, 50));
   }
 }

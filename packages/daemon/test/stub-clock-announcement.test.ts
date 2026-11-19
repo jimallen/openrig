@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STUB_CLOCK_ANNOUNCEMENT } from "../src/adapters/stub-runner.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Slice 51-01 items 6-8 — RIDER (review-r1 safety escalation, orch-ruled): the injected
 // clock SELF-ANNOUNCES. OPENRIG_TEST_CLOCK_NOW is read in the SHIPPED precompact hook, so
@@ -64,10 +64,9 @@ describe("injected-clock self-announcement (stub runner)", () => {
     child.stderr?.on("data", (d) => { stderr += String(d); });
     // Wait until the runner is up (sidecar ready) so the startup announcement has fired.
     const sidecar = join(dir, ".openrig", "stub", "state.json");
-    const deadline = Date.now() + 12_000;
-    const waitStarted = Date.now();
+    const bound = waitBound(12_000);
     while (!existsSync(sidecar)) {
-      if (Date.now() > deadline) throw waitTimedOut("runner did not ready within 12s", waitStarted);
+      if (bound.expired()) throw waitTimedOut("runner did not ready within 12s", bound);
       await new Promise((r) => setTimeout(r, 50));
     }
     await new Promise((r) => setTimeout(r, 150)); // let a same-tick stderr flush

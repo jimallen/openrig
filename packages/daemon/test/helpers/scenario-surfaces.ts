@@ -19,7 +19,7 @@
 import net from "node:net";
 import { runRig } from "./scenario-daemon.js";
 import type { ExpectSurface } from "./scenario-schema.js";
-import { waitTimedOut } from "./wait-timeout.js";
+import { waitBound, waitTimedOut } from "./wait-timeout.js";
 
 export interface SurfaceContext {
   rigBin: string;
@@ -143,11 +143,11 @@ function readTuiSocket(ctx: SurfaceContext, opts: ReadSurfaceOptions): Promise<u
   return new Promise((resolve, reject) => {
     const conn = net.createConnection(sockPath);
     let buf = "";
-    const waitStarted = Date.now();
+    const bound = waitBound(timeoutMs);
     const timer = setTimeout(() => {
       conn.destroy();
-      reject(waitTimedOut("tui_socket `state` query timed out", waitStarted));
-    }, timeoutMs);
+      reject(waitTimedOut("tui_socket `state` query timed out", bound));
+    }, bound.ms);
     conn.on("connect", () => conn.write("state\n"));
     conn.on("data", (b) => {
       buf += b.toString();

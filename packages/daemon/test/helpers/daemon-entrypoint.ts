@@ -17,7 +17,7 @@ import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { claimTestPort } from "./test-ports.js";
-import { waitTimedOut } from "./wait-timeout.js";
+import { waitBound, waitTimedOut } from "./wait-timeout.js";
 
 export const TEST_DAEMON_BIND_HOST = "127.0.0.1";
 
@@ -162,9 +162,8 @@ export function testDaemonEnv(
 async function waitHealthy(port: number, child: ChildProcess, stderr: () => string, timeoutMs: number): Promise<"ready" | "exited"> {
   let exited = child.exitCode !== null || child.signalCode !== null;
   child.once("exit", () => { exited = true; });
-  const deadline = Date.now() + timeoutMs;
-  const waitStarted = Date.now();
-  while (Date.now() < deadline) {
+  const bound = waitBound(timeoutMs);
+  while (!bound.expired()) {
     if (exited) return "exited";
     try {
       const res = await fetch(`http://${TEST_DAEMON_BIND_HOST}:${port}/healthz`, { signal: AbortSignal.timeout(2_000) });
@@ -174,7 +173,7 @@ async function waitHealthy(port: number, child: ChildProcess, stderr: () => stri
     }
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw waitTimedOut(`daemon never became healthy: ${stderr()}`, waitStarted);
+  throw waitTimedOut(`daemon never became healthy: ${stderr()}`, bound);
 }
 
 /** Start the production entrypoint on a private home, bound to loopback only, and wait for /healthz. */

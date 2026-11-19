@@ -19,7 +19,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect } from "vitest";
 import { makeRealStagingDocker } from "./helpers/staging-docker-invoker.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 /** True once no process with this pid exists (an unreaped zombie still counts as alive, so poll
  *  briefly: the orphan is reparented and reaped by init or a subreaper). */
@@ -45,11 +45,10 @@ function descendantScript(pidFile: string): string {
 
 /** Wait until every pid file exists and holds a pid (the step's descendants are running). */
 async function waitForPidFiles(pidFiles: string[], withinMs = 10_000): Promise<void> {
-  const deadline = Date.now() + withinMs;
+  const bound = waitBound(withinMs);
   const ready = (file: string) => fs.existsSync(file) && /^\d+\s*$/.test(fs.readFileSync(file, "utf8"));
-  const waitStarted = Date.now();
   while (!pidFiles.every(ready)) {
-    if (Date.now() > deadline) throw waitTimedOut(`descendants never started: ${pidFiles.filter((f) => !ready(f)).join(", ")}`, waitStarted);
+    if (bound.expired()) throw waitTimedOut(`descendants never started: ${pidFiles.filter((f) => !ready(f)).join(", ")}`, bound);
     await new Promise((resolveWait) => setTimeout(resolveWait, 25));
   }
 }
@@ -224,10 +223,10 @@ describe.skipIf(process.platform === "win32")("makeRealStagingDocker — real pr
       await waitForPidFiles(pidFiles).catch((err: Error) => { throw new Error(`${err.message}; parent said: ${output}`); });
       if (trigger === "exit") parent.stdin!.write("go\n");
       else process.kill(-parent.pid!, trigger);
-      const waitStarted = Date.now();
+      const bound = waitBound(10_000);
       const end = await Promise.race([
         ended,
-        new Promise<never>((_, rejectEnd) => setTimeout(() => rejectEnd(waitTimedOut(`parent did not end: ${output}`, waitStarted)), 10_000)),
+        new Promise<never>((_, rejectEnd) => setTimeout(() => rejectEnd(waitTimedOut(`parent did not end: ${output}`, bound)), bound.ms)),
       ]);
       const survivors = await reapSurvivors(pidFiles);
       expect(survivors, `descendants that outlived the parent (${output.trim()})`).toEqual([]);

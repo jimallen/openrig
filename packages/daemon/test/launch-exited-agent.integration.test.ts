@@ -12,7 +12,7 @@ import { hcTerminalName, SEAT_LABEL } from "../src/adapters/hc-host.js";
 import { prepareHermeticEnv } from "./helpers/hermetic-env.js";
 import { spawnScenarioDaemon, runRig } from "./helpers/scenario-daemon.js";
 import { findHc, startHcScratch, type HcScratch } from "./helpers/hc-scratch.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 // Real daemon, CLI, SQLite and a private hc core (the daemon finds it through HC_SOCKET). The scripted process exits
 // normally on /exit; this checks terminal preservation, not provider authentication.
@@ -30,12 +30,12 @@ it.runIf(process.platform === "linux" && !!findHc())("launch does not call an ex
   const foreground = async () => (await terminal()).foreground?.name;
   const type = (text: string) => scratch!.client().call("terminal.send", { terminal: hcTerminalName(name), text });
   async function until(predicate: () => boolean | Promise<boolean>) {
-    const waitStarted = Date.now();
-    for (let i = 0; i < 200; i++) {
+    const bound = waitBound(200 * 50);
+    for (let i = 0; i < bound.attempts(200); i++) {
       if (await predicate()) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw waitTimedOut("fixture did not settle", waitStarted);
+    throw waitTimedOut("fixture did not settle", bound);
   }
   try {
     scratch = startHcScratch();

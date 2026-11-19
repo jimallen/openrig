@@ -5,18 +5,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HcScratch } from "./hc-scratch.js";
 import { seedPiFixtureCredential } from "./pi-fixture-credential.js";
-import { waitTimedOut } from "./wait-timeout.js";
+import { waitBound, waitTimedOut } from "./wait-timeout.js";
 
 const PACKAGE_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const RUNNERS = fileURLToPath(new URL("../../src/adapters/", import.meta.url));
 
 export async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, what: string, ms = 30_000): Promise<T> {
-  const started = Date.now();
-  const end = started + ms;
+  const bound = waitBound(ms);
   for (;;) {
     const v = await read();
     if (ok(v)) return v;
-    if (Date.now() > end) throw waitTimedOut(`timed out waiting for ${what}`, started, `${JSON.stringify(v)}`);
+    if (bound.expired()) throw waitTimedOut(`timed out waiting for ${what}`, bound, `${JSON.stringify(v)}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 }

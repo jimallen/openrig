@@ -7,7 +7,8 @@ import { waitUntil } from "./helpers/hc-private-core.js";
 import { until as paneUntil } from "./helpers/pi-runner-pane.js";
 import { waitFor } from "./helpers/pda-runner-rig.js";
 
-const EVIDENCE = String.raw`after (\d+) ms \(1-minute load \d+\.\d{2} on \d+ cores\)`;
+// Part 3 adds the bound it named, the load scale and the reading at both ends (test/wait-bound.test.ts pins the scaling itself).
+const EVIDENCE = String.raw`after (\d+) ms \(bound \d+ ms x \d+\.\d{2} = \d+ ms; 1-minute load \d+\.\d{2} on \d+ cores at the start, \d+\.\d{2} at the end\)`;
 
 describe("workspaces-o9o.174: a shared test wait that times out reports the time it waited and the load", () => {
   it("test/hc-private-core until() reports the time it waited and the load", async () => {

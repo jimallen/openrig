@@ -24,7 +24,7 @@ import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { waitTimedOut } from "./helpers/wait-timeout.js";
+import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";
 
 describe("agent pane activity classifier", () => {
   it("classifies active Working pane as agent_active", () => {
@@ -2754,10 +2754,9 @@ function leaseGate() {
 }
 
 async function leaseUntil(check: () => boolean, ms = 2000): Promise<void> {
-  const end = Date.now() + ms;
-  const waitStarted = Date.now();
+  const bound = waitBound(ms);
   while (!check()) {
-    if (Date.now() > end) throw waitTimedOut("condition not reached in time", waitStarted);
+    if (bound.expired()) throw waitTimedOut("condition not reached in time", bound);
     await new Promise((r) => setTimeout(r, 2));
   }
 }
