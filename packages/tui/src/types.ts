@@ -610,7 +610,8 @@ export interface ViewState {
 export type NavigationFrame = Pick<ViewState, "attentionCategory" | "attentionOpen" | "project" | "terminalView" | "terminalPage" | "file" | "externalUrl" | "section" | "drill" | "filter" | "selection" | "runningOf" | "viewTab" | "contentOffset" | "contentMaxOffset" | "contentTargetCount" | "contentSelection" | "focusedPane" | "scopesMission" | "scopesSelected" | "scopesCollapseReqs" | "scopesNarrative" | "executionOpen" | "expanded" | "timeZoneHelp" | "recentOpen" | "configCategory" | "configKey">;
 
 export interface ViewStateStore {
-  instanceId: string;
+  /** Fixed for the store's life: the control socket captures it once, checked, when it binds (o9o.172). */
+  readonly instanceId: string;
   get(): ViewState;
   dispatch(action: Action): ViewState;
   subscribe(fn: (state: ViewState) => void): () => void;

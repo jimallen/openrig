@@ -214,6 +214,22 @@ describe("the socket 'view' query (o9o.172)", () => {
     expect(fs.existsSync(sockPath)).toBe(false);
   });
 
+  it("a later assignment to the store's id cannot change a reply: the socket answers with the id it checked when it bound", async () => {
+    await withSocket(maxSnapshot(), null, async (q, _m, view, qBytes) => {
+      // The type says readonly; Object.assign is what a caller could still do at run time (verify-qa2: 1,100,154 bytes this way).
+      Object.assign(view, { instanceId: "i".repeat(1_100_000) });
+      expect(view.instanceId).toHaveLength(1_100_000);
+      const line = await qBytes("view");
+      expect(line.length).toBeLessThanOrEqual(REPLY_BOUND);
+      const reply = JSON.parse(line.toString("utf8")) as { instanceId: string; view: { rigs: unknown[] } };
+      expect(reply.instanceId).toBe("o9o172");
+      // The digest's budget is sized on the same captured id, so it is not starved by the assigned one.
+      expect(reply.view.rigs.length).toBeGreaterThan(0);
+      expect((await q("state")).instanceId).toBe("o9o172");
+      expect((await q("commands")).instanceId).toBe("o9o172");
+    });
+  });
+
   it("the TUI refuses an over-long --instance when it starts: exit 1, the limit named, no CLI call, no control socket", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "o9o172-id-"));
     try {

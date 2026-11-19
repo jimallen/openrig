@@ -98,8 +98,6 @@ interface ControlSocketOptions {
 }
 
 export async function createControlSocket(options: ControlSocketOptions): Promise<ControlSocket> {
-  // Every reply carries the instance id in its envelope, which the "view" bound cannot shrink: refuse an over-long one up front.
-  assertInstanceId(options.view.instanceId);
   try {
     return await createReservedControlSocket(options);
   } catch (error) {
@@ -191,6 +189,10 @@ function acquireRecoveryReservation(reservation: string, depth = 0): () => void 
 
 async function createReservedControlSocket(options: ControlSocketOptions): Promise<ControlSocket> {
   const { socketPath, view, onMutation } = options;
+  // Every reply carries the instance id in its envelope, which the "view" bound cannot shrink: it is checked here, before the
+  // socket binds, and captured, so the replies carry the id that was checked whatever is later assigned to the store (verify-qa2).
+  const instanceId = view.instanceId;
+  assertInstanceId(instanceId);
   const currentContext = options.currentContext ?? (() => "standard");
   const bytes = Buffer.byteLength(socketPath);
   if (bytes > MAX_SOCKET_PATH_BYTES) {
@@ -215,7 +217,7 @@ async function createReservedControlSocket(options: ControlSocketOptions): Promi
         // stays inside the arch constraint's OBSERVE class beside "state".
         if (line === "commands") {
           conn.write(
-            JSON.stringify({ ok: true, instanceId: view.instanceId, commands: serializeCommands(currentContext()) }) + "\n",
+            JSON.stringify({ ok: true, instanceId, commands: serializeCommands(currentContext()) }) + "\n",
           );
           continue;
         }
@@ -224,17 +226,17 @@ async function createReservedControlSocket(options: ControlSocketOptions): Promi
         if (line === "view") {
           const observed = options.observeView?.();
           // The bound is on the whole encoded line (verify-qa2): the digest gets VIEW_REPLY_MAX_BYTES less this envelope's own bytes.
-          const envelopeBytes = utf8Bytes(JSON.stringify({ ok: true, instanceId: view.instanceId, view: null })) - "null".length + "\n".length;
+          const envelopeBytes = utf8Bytes(JSON.stringify({ ok: true, instanceId, view: null })) - "null".length + "\n".length;
           conn.write(
             JSON.stringify(observed
-              ? { ok: true, instanceId: view.instanceId, view: describeView(observed, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES - envelopeBytes) }
-              : { ok: false, instanceId: view.instanceId, error: "this TUI does not observe a snapshot" }) + "\n",
+              ? { ok: true, instanceId, view: describeView(observed, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES - envelopeBytes) }
+              : { ok: false, instanceId, error: "this TUI does not observe a snapshot" }) + "\n",
           );
           continue;
         }
         if (line === "state") {
           conn.write(
-            JSON.stringify({ ok: true, instanceId: view.instanceId, state: describeState(view.get()) }) + "\n",
+            JSON.stringify({ ok: true, instanceId, state: describeState(view.get()) }) + "\n",
           );
           continue;
         }
