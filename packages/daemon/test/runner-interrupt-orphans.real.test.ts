@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { HC } from "./hc-private-core.js";
 import { hasProcFs } from "./helpers/orphan-reaper.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(here, "fixtures", "runner-interrupt");
@@ -120,7 +121,8 @@ async function startRun(testTimeoutMs: number, { readyMs = 60_000, noReady = fal
   let out = "";
   runner.stdout!.setEncoding("utf8").on("data", (c: string) => { out += c; });
   runner.stderr!.setEncoding("utf8").on("data", (c: string) => { out += c; });
-  const until = Date.now() + readyMs;
+  const startedAt = Date.now();
+  const until = startedAt + readyMs;
   for (;;) {
     const meta = readMeta(metaFile);
     const root = meta.find((m) => m.type === "root");
@@ -131,7 +133,7 @@ async function startRun(testTimeoutMs: number, { readyMs = 60_000, noReady = fal
     }
     if (runner.exitCode !== null || runner.signalCode !== null || Date.now() > until) {
       if (runner.exitCode === null && runner.signalCode === null) row.recorded = runProcesses(runner.pid!, row.runtimeDir);
-      throw new Error(`the inner run never got ready (exit ${runner.exitCode}): ${out.slice(-2000)}`);
+      throw waitTimedOut(`the inner run never got ready (exit ${runner.exitCode})`, startedAt, out.slice(-2000));
     }
     await sleep(50);
   }
