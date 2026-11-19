@@ -245,8 +245,11 @@ interface RpcReply { id?: number; result?: unknown; error?: { code: number; mess
 /** One short-lived connection per call: a queued send can block for as long as a person types, and must never hold up
  *  a liveness read. Reaching the core and hearing it are kept apart: see the two error classes. */
 export class HcClient {
-  /** `enforcePin` is false only for the core watch's own probes: it judges the pin itself and must see a refused core as `present`. */
-  constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS, private readonly enforcePin = true) {}
+  /** `enforcePin` is false only for the core watch's own probe (probeCore): the watch judges and pins that hello itself and must see a
+   *  refused core as `present`. A structural test (hc-unchecked-connections.test.ts) fails on any other construction that turns it off.
+   *  `ownCheck` (workspaces-87f): a further check every hello of this client must pass, beside the per-socket one; the core watch's own
+   *  reads pass its pin through it, so they are held to it even before pinCallsToCore installs the per-socket check. */
+  constructor(readonly socketPath: string = resolveHcSocket(), private readonly defaultTimeoutMs = DEFAULT_TIMEOUT_MS, private readonly enforcePin = true, private readonly ownCheck?: HcHelloCheck) {}
 
   private refusal: string | null = null;
 
@@ -301,6 +304,7 @@ export class HcClient {
       throw new HcError(`core speaks generation ${hello.generation}, this build ${HC_GENERATION}`, "unsupported_generation", -32000);
     }
     if (this.enforcePin) checkHcHello(this.socketPath, hello);
+    this.ownCheck?.(hello);
     return hello;
   }
 

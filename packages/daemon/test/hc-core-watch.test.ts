@@ -533,6 +533,48 @@ describe("HcCoreWatch against a scripted core", () => {
     core.push({ method: "event", params: { seq: 3, type: "title", terminal: "t2", data: {} } });
     await until(() => watch.view().terminals.get("t1")?.title === "re-read" && !watch.view().terminals.has("t2") && watch.view().stale.size === 0, "the re-read and the drop");
   });
+  // verify-sec, 87f attempt 3: refreshStale re-read a stale terminal through a client with the check OFF, so after core-a was pinned a
+  // hello with no id (or another core's) was not judged and that core's terminal record was applied to the watch's view. The refresh
+  // now passes the watch's own pin (and the per-call check when one is installed). Each handshake gets its own reply, in order:
+  // probe, stream, then the refresh's own.
+  it.each([
+    ["with the per-call check installed, a refresh whose hello has no id", true, "idless"],
+    ["with the watch alone, a refresh whose hello has no id", false, "idless"],
+    ["with the watch alone, a refresh whose hello names another core", false, "core-b"],
+  ] as const)("%s: the foreign terminal record is not applied, and terminal.get is never asked", async (_label, perCallCheck, refreshHello) => {
+    const { core, watch } = await setup();
+    const foreign = refreshHello === "idless" ? idless : withId("core-b");
+    core.helloReply = inOrder(withId("core-a"), withId("core-a"), foreign);
+    core.snapshot = () => ({ seq: 1, terminals: [T("t1", { title: "pinned core's" })] });
+    let asked = 0;
+    core.methodsAnswered["terminal.get"] = () => { asked++; return { result: T("t1", { title: "foreign" }) }; };
+    await watch.start();
+    expect(watch.pinnedCoreId()).toBe("core-a");
+    const lift = perCallCheck ? pinCallsToCore(core.socketPath, watch) : () => undefined;
+    try {
+      core.push({ method: "event", params: { seq: 2, type: "title", terminal: "t1", data: { title: "ignored shape" } } });
+      await until(() => core.connections.length >= 3, "the refresh's own connection");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(asked).toBe(0);
+      expect(watch.view().terminals.get("t1")?.title).not.toBe("foreign");
+      expect(watch.pinnedCoreId()).toBe("core-a");
+    } finally {
+      lift();
+    }
+  });
+  it("an id first seen on a refresh's handshake pins the watch (probe and stream without an id, refresh core-a): a later reconnect without one is refused", async () => {
+    const { core, watch } = await setup({ thisInstanceCore: () => ({ kind: "none", file: "/s/herdr-core/default/core.json" }), warn: () => undefined });
+    core.helloReply = inOrder(idless, idless, withId("core-a"), idless);
+    core.snapshot = () => ({ seq: 1, terminals: [T("t1")] });
+    core.methodsAnswered["terminal.get"] = () => ({ result: T("t1", { title: "re-read" }) });
+    await watch.start();
+    expect(watch.pinnedCoreId()).toBeUndefined();
+    core.push({ method: "event", params: { seq: 2, type: "title", terminal: "t1", data: { title: "ignored shape" } } });
+    await until(() => watch.view().terminals.get("t1")?.title === "re-read", "the refresh from the core that sent its id");
+    expect(watch.pinnedCoreId()).toBe("core-a");
+    core.dropConnections();
+    await until(() => watch.state() === "refused", "the refusal of a reconnect without an id");
+  });
   it("subscribes to only the terminals carrying the labels it was given", async () => {
     const { core, watch } = await setup({ labels: { "openrig.seat": "w@rig" } });
     await watch.start();

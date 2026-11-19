@@ -630,7 +630,18 @@ export class HcCoreWatch {
   }
 
   private async refreshStale(generation: number): Promise<void> {
-    const client = new HcClient(this.options.socketPath, undefined, false);
+    // workspaces-87f (verify-sec, attempt 3): the re-read is a handshake like any other. It passes the per-socket check (when the daemon
+    // has installed one) AND the watch's own pin, and pins the first id it carries, so a core that is not the pinned one, or that sends
+    // no id once one is known, is refused before `terminal.get` is asked and nothing it says reaches the view.
+    const client = new HcClient(this.options.socketPath, undefined, true, (hello) => {
+      try {
+        verifyHello(hello, { ...this.options.pin, coreId: this.coreId });
+      } catch (err) {
+        if (err instanceof HcCoreRefusedError) throw new HcError(err.message, err.kind, -32000);
+        throw err;
+      }
+      this.pinFromHello(hello);
+    });
     for (const address of [...this.current.stale]) {
       try {
         const terminal = await client.call<HcViewTerminal>("terminal.get", { terminal: address });
