@@ -58,6 +58,9 @@ class WaitBound {
     return Math.ceil(n * this.scale);
   }
 }
+// workspaces-3u9 round 2 (verify-qa): frozen, with its prototype, so a genuine instance's expired() cannot be shadowed
+// (`Object.assign(bound, { expired })` type-checks without a cast; on a frozen object it throws).
+Object.freeze(WaitBound.prototype);
 export type { WaitBound };
 
 /**
@@ -67,7 +70,9 @@ export type { WaitBound };
  */
 export function waitBound(baseMs: number, read: () => LoadReading = hostLoad, now: () => number = Date.now): WaitBound {
   const startedAt = now();
-  return new WaitBound(startedAt, baseMs, read(), now);
+  const bound = new WaitBound(startedAt, baseMs, read(), now);
+  Object.freeze(bound);   // not `return Object.freeze(...)`: Readonly<WaitBound> drops the #now brand from the type
+  return bound;
 }
 
 /**

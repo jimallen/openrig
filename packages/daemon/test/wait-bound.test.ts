@@ -34,6 +34,19 @@ describe("workspaces-o9o.174 part 3: a test wait's bound scales with the measure
     expect(waitBound(100, reading(21), () => 0).attempts(10)).toBe(11);   // 10 x 1.05 rounds up: a scaled budget never shrinks below n x scale
   });
 
+  // workspaces-3u9 round 2 (verify-qa): a genuine instance's expired() cannot be shadowed. Object.assign(bound, { expired }) type-checks
+  // with no cast, so the instance and its prototype are frozen, and the write throws (test modules are ES modules, so strict mode).
+  it("a WaitBound is frozen: shadowing expired() on it, or on its prototype, throws and leaves it the bound", () => {
+    let t = 0;
+    const bound = waitBound(100, reading(1), () => t);
+    expect(() => Object.assign(bound, { expired: () => true })).toThrow(TypeError);
+    expect(() => Object.defineProperty(bound, "expired", { value: () => true })).toThrow(TypeError);
+    expect(() => Object.assign(Object.getPrototypeOf(bound), { expired: () => true })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(bound, {})).toThrow(TypeError);
+    expect(bound.expired()).toBe(false);
+    t = 100; expect(bound.expired()).toBe(true);   // still the scaled deadline, read through the private clock
+  });
+
   it("the timeout message keeps the lead and prints the waited time, both bounds, the scale and both numbers", () => {
     const bound = waitBound(20_000, reading(24.48), () => 0);
     const err = waitTimedOut("timed out waiting for the probe", bound, "0", { now: () => 30_500, read: reading(26.1) });

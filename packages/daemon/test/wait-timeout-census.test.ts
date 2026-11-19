@@ -57,18 +57,57 @@ const inHelper = (d: ts.Node): boolean => d.getSourceFile().fileName.replace(/\\
  *  or a `const` whose initializer is one (followed through `const` aliases). The type alone is not enough: a hand-made object, a cast,
  *  a parameter, a reassignable `let` or another function's result can carry the type without being one waitBound() made. */
 const madeByWaitBound = (checker: ts.TypeChecker) => {
+  const callsHelper = (e: ts.CallExpression, name: string): boolean => {
+    const d = checker.getResolvedSignature(e)?.declaration;
+    return d !== undefined && ts.isFunctionDeclaration(d) && d.name?.text === name && inHelper(d);
+  };
+  const constDeclaration = (symbol: ts.Symbol): ts.VariableDeclaration | undefined => {
+    const d = symbol.valueDeclaration;
+    return d !== undefined && ts.isVariableDeclaration(d) && d.initializer !== undefined
+      && (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0 ? d : undefined;
+  };
+  const WRITES = new Set([ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken]);
+  /** A property read of the bound, not the target of a write (`b.expired = f`, `b.ms++`, `delete b.ms`). */
+  const isRead = (p: ts.PropertyAccessExpression | ts.ElementAccessExpression): boolean => {
+    const up = p.parent;
+    if (ts.isBinaryExpression(up) && up.left === p && up.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && up.operatorToken.kind <= ts.SyntaxKind.LastAssignment) return false;
+    if ((ts.isPrefixUnaryExpression(up) || ts.isPostfixUnaryExpression(up)) && WRITES.has(up.operator)) return false;
+    return !ts.isDeleteExpression(up);
+  };
+  /** workspaces-3u9 round 2 (verify-qa): every use of the const reads it. A use is a property read, an argument to waitTimedOut, or the
+   *  initializer of a const alias whose own uses pass the same test. Anything else (Object.assign, defineProperty, setPrototypeOf, an
+   *  assignment to a property, handing it to any other function) could replace what expired() does on the genuine instance. */
+  const onlyRead = (symbol: ts.Symbol, d: ts.VariableDeclaration, seen: Set<ts.Symbol>): boolean => {
+    if (seen.has(symbol)) return true;
+    seen.add(symbol);
+    let ok = true;
+    const allowed = (id: ts.Identifier): boolean => {
+      const up = id.parent;
+      if ((ts.isPropertyAccessExpression(up) || ts.isElementAccessExpression(up)) && up.expression === id) return isRead(up);
+      if (ts.isCallExpression(up) && up.arguments.some((a) => a === id)) return callsHelper(up, "waitTimedOut");
+      if (ts.isVariableDeclaration(up) && up.initializer === id) {
+        const alias = checker.getSymbolAtLocation(up.name);
+        return alias !== undefined && constDeclaration(alias) === up && onlyRead(alias, up, seen);
+      }
+      return false;
+    };
+    const visit = (n: ts.Node): void => {
+      if (!ok) return;
+      if (ts.isIdentifier(n) && n !== d.name && checker.getSymbolAtLocation(n) === symbol && !allowed(n)) ok = false;
+      else ts.forEachChild(n, visit);
+    };
+    visit(d.getSourceFile());
+    return ok;
+  };
   const made = (e: ts.Expression, seen: Set<ts.Symbol>): boolean => {
-    if (ts.isCallExpression(e)) {
-      const d = checker.getResolvedSignature(e)?.declaration;
-      return d !== undefined && ts.isFunctionDeclaration(d) && d.name?.text === "waitBound" && inHelper(d);
-    }
+    if (ts.isCallExpression(e)) return callsHelper(e, "waitBound");
     if (!ts.isIdentifier(e)) return false;
     const symbol = checker.getSymbolAtLocation(e);
     if (!symbol || seen.has(symbol)) return false;
     seen.add(symbol);
-    const d = symbol.valueDeclaration;
-    return d !== undefined && ts.isVariableDeclaration(d) && d.initializer !== undefined
-      && (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0 && made(d.initializer, seen);
+    const d = constDeclaration(symbol);
+    return d !== undefined && onlyRead(symbol, d, new Set()) && made(d.initializer!, seen);
   };
   return (e: ts.Expression): boolean => made(e, new Set());
 };
@@ -123,8 +162,10 @@ export interface WaitGiveUp { at: string; kind: "evidenced" | "unscaled" | "reth
  *  use: `bound` (a WaitBound that waitBound() made), `other` (a foreign object with the same method names), `WB` (the WaitBound type). */
 const ROW_PRELUDE: Record<string, string> = {
   "/mem/helpers/wait-timeout.ts": "declare class WaitBound { #now: () => number; readonly deadline: number; readonly ms: number; expired(): boolean;"
-    + " attempts(n: number): number }\nexport type { WaitBound };\nexport declare function waitBound(ms: number): WaitBound;\n",
+    + " attempts(n: number): number }\nexport type { WaitBound };\nexport declare function waitBound(ms: number): WaitBound;\n"
+    + "export declare function waitTimedOut(lead: string, bound: WaitBound, last?: string): Error;\n",
   "/mem/globals.ts": "declare const waitBound: typeof import(\"./helpers/wait-timeout\").waitBound;\n"
+    + "declare const waitTimedOut: typeof import(\"./helpers/wait-timeout\").waitTimedOut;\n"
     + "const bound = waitBound(9);\n"
     + "declare const other: { readonly deadline: number; expired(): boolean; attempts(n: number): number };\n"
     + "type WB = import(\"./helpers/wait-timeout\").WaitBound;\n",
@@ -220,6 +261,15 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "foreign-maker.ts": "declare function makeBound(ms: number): WB;\nasync function w() { const b6 = makeBound(9); for (;;) { if (b6.expired()) throw waitTimedOut('x', b6); await nap(); } }",
       "fake-alias.ts": "declare const typed2: WB;\nasync function w() { const b7 = typed2; for (;;) { if (b7.expired()) throw waitTimedOut('x', b7); await nap(); } }",
       "cycle.ts": "async function w() { const c1: WB = c2; const c2: WB = c1; for (;;) { if (c1.expired()) throw waitTimedOut('x', c1); await nap(); } }",
+      // workspaces-3u9 round 2 (verify-qa): a waitBound() const counts only while every use of it reads it. Anything else can replace
+      // what expired() does on the genuine instance, with no cast.
+      "shadowed.ts": "async function w() { const b8 = waitBound(9); Object.assign(b8, { expired: () => Date.now() > 5 }); for (;;) { if (b8.expired()) throw waitTimedOut('x', b8); await nap(); } }",
+      "assigned.ts": "async function w() { const b9 = waitBound(9); b9.expired = () => true; for (;;) { if (b9.expired()) throw waitTimedOut('x', b9); await nap(); } }",
+      "defined.ts": "async function w() { const b10 = waitBound(9); Object.defineProperty(b10, 'expired', { value: () => true }); for (;;) { if (b10.expired()) throw waitTimedOut('x', b10); await nap(); } }",
+      "proto.ts": "async function w() { const b11 = waitBound(9); Object.setPrototypeOf(b11, { expired: () => true }); for (;;) { if (b11.expired()) throw waitTimedOut('x', b11); await nap(); } }",
+      "handed.ts": "async function w() { const b12 = waitBound(9); tamper(b12); for (;;) { if (b12.expired()) throw waitTimedOut('x', b12); await nap(); } }",
+      "alias-shadowed.ts": "async function w() { const b13 = waitBound(9); const b14 = b13; Object.assign(b14, { expired: () => true }); for (;;) { if (b13.expired()) throw waitTimedOut('x', b13); await nap(); } }",
+      "reads.ts": "async function w() { const b15 = waitBound(9); setTimeout(nap, b15.ms); const b16 = b15; for (;;) { if (b16.expired()) throw waitTimedOut(`x ${b15.deadline}`, b15); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
@@ -255,6 +305,13 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "foreign-maker.ts:2", kind: "unscaled" },  // another function returning WaitBound is not waitBound()
       { at: "fake-alias.ts:2", kind: "unscaled" },     // an alias of a fake stays a fake
       { at: "cycle.ts:1", kind: "unscaled" },          // const aliases of each other: no waitBound() at the end, and the walk ends
+      { at: "shadowed.ts:1", kind: "unscaled" },       // Object.assign over a genuine instance's expired() (verify-qa, 3u9 round 2)
+      { at: "assigned.ts:1", kind: "unscaled" },       // an assignment to one of its properties
+      { at: "defined.ts:1", kind: "unscaled" },        // Object.defineProperty
+      { at: "proto.ts:1", kind: "unscaled" },          // any other use: the census cannot see what tamper() or setPrototypeOf does
+      { at: "handed.ts:1", kind: "unscaled" },
+      { at: "alias-shadowed.ts:1", kind: "unscaled" }, // tampered through an alias, asked through the original
+      { at: "reads.ts:1", kind: "evidenced" },         // reads, an alias and waitTimedOut are uses that leave it the bound
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
@@ -278,7 +335,7 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
   // header comment, placed where verify-qa placed it. A hand-made WaitBound whose expired() reads a fixed deadline: it must not compile
   // (WaitBound is nominal, made only by waitBound()), and the census must not credit it even where type errors are tolerated (the daemon
   // test type check is a ratchet, not a gate on zero).
-  it("a hand-made WaitBound does not compile, and the census does not credit it (verify-qa's attempt-3 fake)", () => {
+  it("a hand-made WaitBound does not compile, and the census credits neither it nor a genuine one with expired() shadowed (verify-qa)", () => {
     const fakePath = join(TEST_DIR, "__review-fake-wait-bound.ts");
     const fakeSource = [
       'import { waitTimedOut, type WaitBound } from "./helpers/wait-timeout.js";',
@@ -311,14 +368,32 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
     const constructPath = join(TEST_DIR, "__review-construct-wait-bound.ts");
     const constructSource = 'import { WaitBound } from "./helpers/wait-timeout.js";\n'
       + "export const made = new WaitBound(0, 1_000, { load1: 0, cores: 20 }, () => 0);\n";
-    const virtual: Record<string, string> = { [fakePath]: fakeSource, [constructPath]: constructSource };
+    // verify-qa, 3u9 round 2: a genuine instance whose expired() is shadowed with Object.assign. It type-checks (no cast, no any), so
+    // only the census and the frozen instance (wait-bound.test.ts) stop it.
+    const shadowPath = join(TEST_DIR, "__review-bound-expired-monkeypatch.ts");
+    const shadowSource = [
+      'import { waitBound, waitTimedOut } from "./helpers/wait-timeout.js";',
+      "",
+      "const oldDeadline = Date.now() + 1_000;",
+      "async function waitForShadowedBound(): Promise<never> {",
+      "  const bound = waitBound(60_000);",
+      "  Object.assign(bound, { expired: () => Date.now() > oldDeadline });",
+      "  for (;;) {",
+      '    if (bound.expired()) throw waitTimedOut("...", bound);',
+      "    await new Promise((resolve) => setTimeout(resolve, 5));",
+      "  }",
+      "}",
+      "void waitForShadowedBound;",
+      "",
+    ].join("\n");
+    const virtual: Record<string, string> = { [fakePath]: fakeSource, [constructPath]: constructSource, [shadowPath]: shadowSource };
     const host = ts.createCompilerHost(options);
     const read = host.getSourceFile.bind(host);
     host.getSourceFile = (fileName, target, ...rest) =>
       (fileName in virtual ? ts.createSourceFile(fileName, virtual[fileName]!, target, true) : read(fileName, target, ...rest));
     const fileExists = host.fileExists.bind(host);
     host.fileExists = (fileName) => fileName in virtual || fileExists(fileName);
-    const program = ts.createProgram([join(TEST_DIR, "helpers", "wait-timeout.ts"), fakePath, constructPath], options, host);
+    const program = ts.createProgram([join(TEST_DIR, "helpers", "wait-timeout.ts"), fakePath, constructPath, shadowPath], options, host);
     const errors = (path: string) => program.getSemanticDiagnostics(program.getSourceFile(path)).map((d) => ({
       line: d.file!.getLineAndCharacterOfPosition(d.start!).line + 1, code: d.code,
       message: ts.flattenDiagnosticMessageText(d.messageText, "\n").split("\n")[0],
@@ -328,6 +403,10 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
     expect(errors(constructPath)).toEqual([{ line: 2, code: 1362, message: expect.stringContaining("exported using 'export type'") }]);
     expect(waitGiveUps({}, { program, fileNames: [fakePath], root: TEST_DIR })).toEqual([
       { at: "__review-fake-wait-bound.ts:17", kind: "unscaled" },
+    ]);
+    expect(errors(shadowPath)).toEqual([]);   // the shadowing type-checks, which is why the census must see it
+    expect(waitGiveUps({}, { program, fileNames: [shadowPath], root: TEST_DIR })).toEqual([
+      { at: "__review-bound-expired-monkeypatch.ts:8", kind: "unscaled" },
     ]);
   });
 
