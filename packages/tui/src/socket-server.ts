@@ -11,6 +11,7 @@
 //      crossing either line routes to arch-lead BEFORE building.
 // The only non-grammar verb is "state" — a read-only state query (OBSERVE).
 import { describeView, utf8Bytes, VIEW_DIGEST_LIMITS, VIEW_REPLY_MAX_BYTES } from "./observe/view-digest.js";
+import { assertInstanceId } from "./instance-id.js";
 import type { FleetSnapshot, LoadState } from "./types.js";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
@@ -97,6 +98,8 @@ interface ControlSocketOptions {
 }
 
 export async function createControlSocket(options: ControlSocketOptions): Promise<ControlSocket> {
+  // Every reply carries the instance id in its envelope, which the "view" bound cannot shrink: refuse an over-long one up front.
+  assertInstanceId(options.view.instanceId);
   try {
     return await createReservedControlSocket(options);
   } catch (error) {

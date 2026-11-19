@@ -24,7 +24,7 @@ layer):
     node packages/tui/dist/main.js --instance tui-1
 
     # options:
-    #   --instance <id>   instance id (socket address; multi-instance ready)
+    #   --instance <id>   instance id (socket address; multi-instance ready; at most 128 UTF-8 bytes, refused at start past that)
     #   --url <daemon>    daemon base URL (default $OPENRIG_URL or http://127.0.0.1:7433)
     #   --socket <path>   control socket (default $OPENRIG_TUI_SOCKET or $OPENRIG_HOME/run/tui-<id>.sock)
     #   --demo            labeled demo fixture instead of live reads (never mixes with live)

@@ -40,6 +40,7 @@ import { MOTION_FRAME_MS } from "./visual-layout.js";
 import { launchProcess, runSpecLaunch } from "./specs/launch.js";
 import { runCopySession, processCopyTerminal } from "./print-for-copy.js";
 import { openTerminalInWindow, terminalWindowNotice } from "./terminals/open-window.js";
+import { assertInstanceId } from "./instance-id.js";
 
 function argOf(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -49,6 +50,8 @@ function argOf(args: string[], flag: string): string | undefined {
 async function run(): Promise<void> {
   const args = process.argv.slice(2);
   const instanceId = argOf(args, "--instance") ?? "tui-1";
+  // workspaces-o9o.172: refuse an over-long instance id before anything starts (it rides in every control socket reply).
+  assertInstanceId(instanceId);
   const demo = args.includes("--demo");
   // Reuse the entry/runtime that opened this TUI, even under a conflicting PATH.
   const cliEntry = process.env["OPENRIG_TUI_CLI_ENTRY"];

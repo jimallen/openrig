@@ -3,6 +3,7 @@ import { terminalExplorerRows } from "./terminals/terminal-model.js";
 import { CONFIG_CATEGORIES } from "./config/config-model.js";
 import { availableTabs } from "./commands/registry.js";
 import { DEFAULT_TIME_ZONE, resolveTimeZone } from "./time.js";
+import { assertInstanceId } from "./instance-id.js";
 // ONE instance-scoped view-state with ONE mutation path (dispatch) — PIN 1.
 // No module-level state anywhere in this file (FR-13). The section set is a
 // data registry, not a switch (FR-12). Ported from the Phase-0 spike verbatim
@@ -45,6 +46,7 @@ export interface CreateViewStateOptions {
 export function createViewState(options: CreateViewStateOptions): ViewStateStore {
   const { instanceId, sections = defaultSections(), getSnapshot = emptySnapshot } = options;
   if (!instanceId) throw new Error("createViewState requires an instanceId (A2: instances are addressable)");
+  assertInstanceId(instanceId);
 
   let state: ViewState = {
     instanceId,

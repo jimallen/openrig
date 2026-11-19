@@ -89,7 +89,7 @@ against the locked/ruled shape so it drops in when the dependency lands.
   (needs `env.tui`). Every list and string in the digest is capped (500 rigs, 200 agents per rig, 2000
   agents, 100 down hosts, 100 characters a string) as a first pass, and the whole reply line is at most
   1,000,000 UTF-8 bytes (agent detail goes first, then down hosts, then rig rows; `truncated` when
-  anything is cut), and each rig
+  anything is cut; the instance id in its envelope is at most 128 UTF-8 bytes, refused at start), and each rig
   carries its whole `agentCount`, or `null` with `inventory: not-loaded|unavailable` when the TUI has
   not read its seats: the TUI reads a rig's seats only once that rig is selected (measured on a real
   TUI, whose landing page holds no seats), so #10 first drills it into the rig with the `tui` action

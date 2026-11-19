@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createControlSocket, describeState } from "../src/socket-server.js";
 import { createViewState } from "../src/state.js";
 import { demoSnapshot } from "../src/demo-data.js";
@@ -165,20 +168,78 @@ describe("the socket 'view' query (o9o.172)", () => {
     });
   });
 
-  it("the bound covers the envelope too: with a 100,000-character instance id the whole line still fits", async () => {
+  // verify-qa2's third review: the digest can shrink, the envelope cannot, so the instance id is bounded (128 UTF-8 bytes) and an
+  // over-long one is refused at start, naming the limit. With the longest id allowed, written in the character JSON escapes most
+  // (NUL: 1 byte, a 6-byte escape), the whole line still fits at the maximum counts.
+  /** The stated id limit, written out here so these rows measure against it whatever the module exports. */
+  const ID_LIMIT = 128;
+  const maxSnapshot = (): FleetSnapshot => {
     const snapshot = demoSnapshot();
     const big = "\u6f22".repeat(5000);
     const agent = { ...snapshot.hosts[0]!.rigs[0]!.pods[0]!.agents[0]!, name: big, session: big, status: big };
     snapshot.hosts = [{ ...snapshot.hosts[0]!, name: big, rigs: Array.from({ length: 600 }, (_v, i) => ({ ...snapshot.hosts[0]!.rigs[0]!, id: big, name: `${i}${big}`,
       inventoryNotLoaded: false, inventoryUnavailable: false,
       pods: [{ ...snapshot.hosts[0]!.rigs[0]!.pods[0]!, agents: Array.from({ length: 300 }, () => agent) }] })) }];
-    const instanceId = "i".repeat(100_000);
-    await withSocket(snapshot, null, async (_q, _m, _v, qBytes) => {
+    snapshot.hostsDown = Array.from({ length: 500 }, () => ({ hostId: big, status: "unreachable" }));
+    return snapshot;
+  };
+
+  it("the bound covers the envelope too: with the longest instance id allowed, all of it escaped, the whole line still fits", async () => {
+    const instanceId = "\u0000".repeat(ID_LIMIT);
+    await withSocket(maxSnapshot(), null, async (_q, _m, _v, qBytes) => {
       const line = await qBytes("view");
       expect(line.length).toBeLessThanOrEqual(REPLY_BOUND);
       expect((JSON.parse(line.toString("utf8")) as { instanceId: string }).instanceId).toBe(instanceId);
     }, instanceId);
   });
+
+  it("an over-long instance id is refused, naming the limit: the 1,100,000-character id verify-qa2 measured", () => {
+    expect(() => createViewState({ instanceId: "i".repeat(1_100_000), getSnapshot: () => demoSnapshot() }))
+      .toThrow(`the instance id is 1100000 bytes; the limit is ${ID_LIMIT} bytes (UTF-8)`);
+  });
+
+  it("the id limit is in UTF-8 bytes, inclusive: 128 bytes start, 129 are refused, whatever the characters", () => {
+    const accepted = ["i".repeat(ID_LIMIT), "\u6f22".repeat(42) + "ii", "\ud83d\ude00".repeat(32), "\u0000".repeat(ID_LIMIT)];
+    const refused = ["i".repeat(ID_LIMIT + 1), "\u6f22".repeat(43), "\ud83d\ude00".repeat(32) + "i"];
+    for (const instanceId of [...accepted, ...refused]) expect(Buffer.byteLength(instanceId, "utf8")).toBe(accepted.includes(instanceId) ? ID_LIMIT : ID_LIMIT + 1);
+    for (const instanceId of accepted) expect(createViewState({ instanceId, getSnapshot: () => demoSnapshot() }).instanceId).toBe(instanceId);
+    for (const instanceId of refused) expect(() => createViewState({ instanceId, getSnapshot: () => demoSnapshot() }), JSON.stringify(instanceId)).toThrow(`the limit is ${ID_LIMIT} bytes`);
+  });
+
+  it("the control socket refuses a view store with an over-long id before it binds", async () => {
+    const view = { ...createViewState({ instanceId: "o9o172", getSnapshot: () => demoSnapshot() }), instanceId: "i".repeat(1_100_000) };
+    const sockPath = path.join(os.tmpdir(), `t-o9o172-${process.pid}-${n++}.sock`);
+    await expect(createControlSocket({ socketPath: sockPath, view, observeView: () => ({ snapshot: demoSnapshot(), load: null }) } as Parameters<typeof createControlSocket>[0]))
+      .rejects.toThrow(`the limit is ${ID_LIMIT} bytes`);
+    expect(fs.existsSync(sockPath)).toBe(false);
+  });
+
+  it("the TUI refuses an over-long --instance when it starts: exit 1, the limit named, no CLI call, no control socket", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "o9o172-id-"));
+    try {
+      const entry = fileURLToPath(new URL("../dist/main.js", import.meta.url));
+      // A short --socket: the default path (run/tui-<id>.sock) is refused past ~104 bytes for its own reason, which would hide this one.
+      const socketPath = path.join(root, "s.sock");
+      // The CLI the TUI calls first (`config get ui.timezone`), replaced by one that leaves a mark: refused at start means never called.
+      const marker = path.join(root, "cli-called");
+      const cliEntry = path.join(root, "cli.mjs");
+      fs.writeFileSync(cliEntry, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "called");\n`);
+      const child = spawn(process.execPath, [entry, "--demo", "--socket", socketPath, "--instance", "i".repeat(ID_LIMIT + 1)], {
+        env: { ...process.env, OPENRIG_HOME: root, OPENRIG_TUI_SOCKET: "", OPENRIG_TUI_CLI_ENTRY: cliEntry, NO_COLOR: "1" }, stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
+      // A TUI that starts instead keeps running: stop it after 10 s, so the row fails on the exit code rather than hanging.
+      const stop = setTimeout(() => child.kill("SIGTERM"), 10_000);
+      const code = await new Promise<number | null>((resolve) => child.on("exit", (c) => resolve(c))).finally(() => clearTimeout(stop));
+      expect(code).toBe(1);
+      expect(stderr).toContain(`the instance id is ${ID_LIMIT + 1} bytes; the limit is ${ID_LIMIT} bytes (UTF-8)`);
+      expect(fs.existsSync(socketPath)).toBe(false);
+      // The CLI child outlives a TUI that exits right after starting it, so give it time to leave its mark before reading.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }, 20_000);
 
   it("CONTROL: a reply that fits is not cut: the demo snapshot's digest is whole, untruncated, and far under the bound", async () => {
     await withSocket(demoSnapshot(), null, async (_q, _m, _v, qBytes) => {
