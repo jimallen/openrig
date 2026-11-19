@@ -719,7 +719,8 @@ describe("durable catch-up cursor survives launch-attempt resets", () => {
   it("buildPendingRunnerState carries ONLY the cursor forward (everything else reset)", () => {
     const prior = parsePiRunnerState(priorWithCursor)!;
     const pending = buildPendingRunnerState("launch-2", "t2", prior);
-    expect(pending).toEqual({ ready: false, launchId: "launch-2", lastEntryId: "entry-42", updatedAt: "t2" });
+    // workspaces-d7l: the gate is the launch's own declaration (this package's runner always carries it), not carried from the prior record.
+    expect(pending).toEqual({ ready: false, launchId: "launch-2", lastEntryId: "entry-42", updatedAt: "t2", seatGate: 1 });
     expect(buildPendingRunnerState("launch-2", "t2", null).lastEntryId).toBeUndefined();
   });
 

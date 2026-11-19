@@ -10,6 +10,7 @@ import { HcAttach } from "../src/adapters/hc-attach.js";
 import { HcInput } from "../src/adapters/hc-input.js";
 import { hcTerminalName } from "../src/adapters/hc-seat.js";
 import { seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
+import { buildPendingRunnerState, piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -451,6 +452,36 @@ describe.skipIf(!HC)("the combined reviews' findings, on a real daemon", () => {
       await wait(1_500); // anything the pump typed during the held start has been read by now
       const effects = readFileSync(pi.effects, "utf8").split("\n").filter(Boolean);
       expect(effects, `effects ${JSON.stringify(effects)}; hops ${JSON.stringify(s.hop())}`).toHaveLength(1);
+    }, 120_000);
+
+    // workspaces-d7l, verify-qa2: the same window on a fresh launch, reached by an ordinary send, not the pump. The launch writes its pending
+    // record (buildPendingRunnerState, as PiRuntimeAdapter.launch does) and types the runner's command; the send comes while that runner is the
+    // foreground and still held. Ungated, SessionTransport typed it straight into the pane (path hc), and the body and its marker arrived apart.
+    it("d7l: a send through /api/transport/send while a fresh launch's runner is not yet reading its input goes to the pump, and arrives once", async () => {
+      const s = fixture([], "pi");
+      const pi = fakePi(s.dir);
+      const root = join(HOME, "state", "pi");
+      seedPiFixtureCredential(root, s.name, "openrouter");
+      mkdirSync(join(root, s.name), { recursive: true });
+      writeFileSync(piSeatPaths(root, s.name).runnerStatePath, JSON.stringify(buildPendingRunnerState("l2", new Date().toISOString(), null)));
+      await core.client.call("terminal.run", { argv: ["/bin/bash", "-l"], name: s.address, cwd: s.dir, env: { PATH: `${pi.bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(core.root, "h"), HISTFILE: join(s.dir, "history") }, labels: { "openrig.seat": s.name }, no_parent: true, no_notify: true, outlive_parent: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground, Boolean, "the shell");
+      const slowStart = join(s.dir, "slow-start.mjs");
+      writeFileSync(slowStart, "await new Promise((resolve) => setTimeout(resolve, 4000));\n");
+      daemon(s); await hopSaw(s, "booted");
+      await core.client.call("terminal.send", { terminal: s.address,
+        text: `cd ${resolve(here, "..")} && exec env PATH=${pi.bin}:$PATH node --import tsx --import ${pathToFileURL(slowStart).href} ${RUNNER} --session-name ${s.name} --state-root ${root} --cwd ${s.dir} --launch-id l2 --no-approve --model openrouter/fixture`, force: true });
+      await until(async () => (await core.client.call<{ foreground?: { name: string } | null }>("terminal.get", { terminal: s.address })).foreground?.name, (n) => n === "node", "the runner in the foreground", 10_000);
+      expect(await screen(s)).not.toContain("[pi-runner] READY");
+      const res = http(s, "/api/transport/send", { session: s.name, text: "hello via transport" });
+      expect(res.status, res.text).toBe(200);
+      expect(JSON.parse(res.text), res.text).toMatchObject({ reason: "handed_to_pump" });
+      await until(() => screen(s), (t) => t.includes("[pi-runner] READY"), "the runner up", 30_000);
+      const effects = () => readFileSync(pi.effects, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string);
+      await until(effects, (e) => e.length > 0, "the message at Pi", 40_000);
+      await wait(1_500); // anything typed during the held start has been read by now
+      expect(effects(), `hops ${JSON.stringify(s.hop())}`).toHaveLength(1);
+      expect(effects()[0]).toContain("hello via transport");
     }, 120_000);
 
     // The launch `hc-input.ts` types for a sourced seat: `( . cmd )`, so the agent runs inside a forked subshell, whose argv is the login shell's.

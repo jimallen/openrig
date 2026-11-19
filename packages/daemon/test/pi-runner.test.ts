@@ -971,7 +971,7 @@ describe("prepareRunnerSidecar — the cursor survives the runner's own reset", 
     const fs = memFsOps({ [PATH]: prior });
     const { catchUpSince } = prepareRunnerSidecar(fs, PATH, "launch-9", true, () => "t2");
     expect(catchUpSince).toBe("entry-42");
-    expect(JSON.parse(fs.files[PATH]!)).toEqual({ ready: false, launchId: "launch-9", lastEntryId: "entry-42", updatedAt: "t2" });
+    expect(JSON.parse(fs.files[PATH]!)).toEqual({ ready: false, launchId: "launch-9", lastEntryId: "entry-42", updatedAt: "t2", seatGate: 1 });
   });
 
   it("fresh/fork (not resuming) returns no catch-up but still preserves the record's cursor", () => {
@@ -985,7 +985,7 @@ describe("prepareRunnerSidecar — the cursor survives the runner's own reset", 
     const fs = memFsOps({});
     const { catchUpSince } = prepareRunnerSidecar(fs, PATH, "launch-9", true, () => "t2");
     expect(catchUpSince).toBeUndefined();
-    expect(JSON.parse(fs.files[PATH]!)).toEqual({ ready: false, launchId: "launch-9", updatedAt: "t2" });
+    expect(JSON.parse(fs.files[PATH]!)).toEqual({ ready: false, launchId: "launch-9", updatedAt: "t2", seatGate: 1 });
   });
 
   it("COMPOSED (the guard's red-green case): prior cursor -> prepare -> RunnerCore.start sends get_entries since", () => {

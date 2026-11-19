@@ -21,7 +21,7 @@ import type {
   HarnessLaunchResult, ForkSource, RunnerReadinessTarget,
 } from "../domain/runtime-adapter.js";
 import type { AgentActivity } from "../domain/types.js";
-import { NO_STARTUP_SEND, resolveConcreteHint, RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON } from "../domain/runtime-adapter.js";
+import { NO_STARTUP_SEND, resolveConcreteHint, RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, RUNNER_STARTING_REASON } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { validateResumeToken } from "../domain/resume-token-validation.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -29,7 +29,7 @@ import { observePiResourceTrust, observeOmpApprovalMode } from "../domain/permis
 import { durableLaunchFailureSuffix, paneTailQuote, redactPaneText } from "../domain/launch-failure-report.js";
 import { runnerTerminalEnded } from "./runner-terminal-ended.js";
 import {
-  piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState,
+  piSeatPaths, parsePiRunnerState, buildPiRunnerCommand, buildPendingRunnerState, piLaunchPending,
   PI_RUNNER_READY_MARKER, PI_RUNNER_ERROR_MARKER, PI_RUNNER_EXIT_MARKER, piSidecarAlive, PI_SIDECAR_ALIVE_WINDOW_MS,
   type PiRunnerState, type PiModelErrorLoop, type RunnerRuntime,
   type PiModelOverrides,
@@ -418,10 +418,13 @@ export class PiRuntimeAdapter implements RuntimeAdapter {
   async sendReadiness(target: RunnerReadinessTarget): Promise<AgentActivity | null> {
     let state: PiRunnerState | null;
     try { state = this.readRunnerState(target.sessionName); } catch { return null; }
-    if (!state || !state.ready || state.exited || typeof state.busy !== "boolean") return null;
     const nowMs = this.now().getTime();
-    if (!piSidecarAlive(state, nowMs)) return null;
     const base = { evidenceSource: "runner_sidecar" as const, sampledAt: new Date(nowMs).toISOString(), evidence: null, runtime: this.runtime };
+    // workspaces-d7l: the launch's own record, not yet replaced by its runner. Text typed now arrives before the runner reads its input,
+    // split from its marker, so every direct send refuses (session-transport RUNNER_SEAM_FAILURES) until this launch's runner is ready.
+    if (state && piLaunchPending(state)) return { ...base, state: "unknown", reason: RUNNER_STARTING_REASON };
+    if (!state || !state.ready || state.exited || typeof state.busy !== "boolean") return null;
+    if (!piSidecarAlive(state, nowMs)) return null;
     // Only idle or running, from `busy`. OMP attention (a model error, a cancelled approval) is display-only for send
     // gating: the runner cancels the approval itself, so no prompt waits in the pane, and its remedy is a new
     // instruction, which `rig send` must be able to deliver. The code stays visible through the Notification hook.

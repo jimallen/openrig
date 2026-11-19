@@ -18,6 +18,7 @@
 
 import { MODEL_ERROR_LOOP_THRESHOLD, MODEL_ERROR_LOOP_WINDOW_MS } from "../domain/model-error-loop-rule.js";
 import nodePath from "node:path";
+import { SEAT_GATE_VERSION } from "./seat-gate-marker.js";
 import { shellQuote } from "./shell-quote.js";
 export type RunnerRuntime = "pi" | "omp";
 
@@ -138,7 +139,13 @@ export function piSidecarAlive(state: PiRunnerState, nowMs: number): boolean {
  *  the durable catch-up cursor (FR-5) must survive the stale-artifact reset —
  *  erasing it broke get_entries-since on resume (guard re-verdict,
  *  qitem-20260707013815). Everything else from the prior record is exactly
- *  the stale state the reset exists to scope away. */
+ *  the stale state the reset exists to scope away.
+ *
+ *  workspaces-d7l: it also declares the seat gate. Every writer launches this
+ *  package's runner, whose main always opens the gate, so the seat is the
+ *  pump's from before the command is typed: a send in the window before the
+ *  runner reads its input is held (PiSeatHop, runner_starting), never typed
+ *  into the pane, where it would arrive split from its marker. */
 export function buildPendingRunnerState(
   launchId: string,
   updatedAt: string,
@@ -149,7 +156,14 @@ export function buildPendingRunnerState(
     launchId,
     lastEntryId: prior?.lastEntryId,
     updatedAt,
+    seatGate: SEAT_GATE_VERSION,
   };
+}
+
+/** workspaces-d7l: the record a launch writes (buildPendingRunnerState) and that its runner has not yet replaced: every runner write carries
+ *  `aliveAt` (OF-119) or `exited`. The runner is not reading its input yet, so nothing may be typed into the seat. */
+export function piLaunchPending(state: PiRunnerState): boolean {
+  return state.ready === false && state.exited === undefined && state.aliveAt === undefined;
 }
 
 export function parsePiRunnerState(raw: string): PiRunnerState | null {

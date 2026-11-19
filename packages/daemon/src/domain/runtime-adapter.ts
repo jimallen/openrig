@@ -163,6 +163,10 @@ export const RUNNER_PASTE_OPEN_REASON = "paste_open";
  *  paste that was recovered but not cleared. A send now would be appended to that text and submitted with it. */
 export const RUNNER_PASTE_LEFTOVER_REASON = "paste_leftover";
 
+/** workspaces-d7l: the `reason` of the unknown a Pi or OMP adapter answers while the seat holds its launch's pending record: the runner this
+ *  launch typed has not started reading its input, so text sent now would arrive split from its marker. A runner seam failure: it refuses. */
+export const RUNNER_STARTING_REASON = "runner_starting";
+
 /** pda L0: what `RuntimeAdapter.sendReadiness` is asked about. Identity only: a runner's readiness is a
  *  file the runner writes, found by session name. */
 export interface RunnerReadinessTarget {

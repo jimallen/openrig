@@ -42,7 +42,7 @@ import { findLatestSessionNameMatch, isNodeInArchivedRig } from "./latest-sessio
 import { liveRigsNamedBy, rigHadSeat } from "./seat-messaging/seat-history.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity, BindingAttachmentType } from "./types.js";
-import { RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
+import { RUNNER_PASTE_OPEN_REASON, RUNNER_PASTE_LEFTOVER_REASON, RUNNER_STARTING_REASON, type RunnerSendReadinessSource } from "./runtime-adapter.js";
 import type { GuardTarget, SeatDeliveryGuard } from "./seat-delivery-guard.js";
 import { wrapPaneEnvelope, appendDeliveredSegment, type EnvelopeScope } from "../lib/pane-envelope.js";
 import { getSelfHostId } from "./hosts/fanout-contract.js";
@@ -1227,7 +1227,7 @@ export interface HcSeatDelivery {
  *  or the pane's foreground is a shell or cannot be read). Unreadable authority is an outage, never open:
  *  these refuse on the default path too, where any other unknown proceeds with an advisory. */
 const RUNNER_SEAM_FAILURES: ReadonlySet<string> = new Set([
-  "runner_not_foreground", "runner_foreground_unobserved", "runner_readiness_unavailable",
+  "runner_not_foreground", "runner_foreground_unobserved", "runner_readiness_unavailable", RUNNER_STARTING_REASON,
 ]);
 
 /** OF-148: the refusal while a runner's pane editor holds a bracketed paste whose closing marker never arrived. In that

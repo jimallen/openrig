@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { HookSeenStore, seatGateFolder, seatGateRoot } from "../src/adapters/hook-seen-store.js";
-import { piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
+import { buildPendingRunnerState, piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
 import { CodexSeatHop, ClaudeSeatHop, PiSeatHop } from "../src/adapters/seat-hops.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -72,6 +72,19 @@ describe("the seats the pump serves", () => {
       sidecar(roots()[runtime], name, { seatGate: 1 });
       expect(ports.gateFor(name)?.version).toBe(1);
       expect(ports.hopFor(name)).toBeInstanceOf(PiSeatHop);
+    }
+  });
+
+  // workspaces-d7l (verify-qa2): the launch writes this record before it types the runner's command, and this daemon's runner always carries
+  // the gate. Ungated, an ordinary send in that window went straight to the pane, while the runner was not yet reading its input.
+  it("d7l: a Pi or OMP seat whose launch is pending (the record the launch writes) is gated, so a send in that window goes to the pump", () => {
+    for (const runtime of ["pi", "omp"] as const) {
+      const { name } = seat(runtime);
+      const { runnerStatePath, seatRoot } = piSeatPaths(roots()[runtime], name);
+      mkdirSync(seatRoot, { recursive: true });
+      writeFileSync(runnerStatePath, JSON.stringify(buildPendingRunnerState("l1", "1970-01-01T00:00:00.000Z", null)));
+      expect(ports.gateFor(name)?.version, runtime).toBe(1);
+      expect(ports.hopFor(name), runtime).toBeInstanceOf(PiSeatHop);
     }
   });
 

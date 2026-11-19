@@ -18,7 +18,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { runnerSendReadinessFromAdapters, type RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { PiRuntimeAdapter } from "../src/adapters/pi-runtime-adapter.js";
 import { OmpRuntimeAdapter } from "../src/adapters/omp-runtime-adapter.js";
-import { piSeatPaths, type PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
+import { buildPendingRunnerState, piSeatPaths, type PiRunnerState } from "../src/adapters/pi-runner-protocol.js";
 import { RunnerCore, type RunnerIo } from "../src/adapters/pi-runner.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
@@ -208,6 +208,37 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     expect(activity.at(-1)).toMatchObject({ hookEvent: "Stop" });
     expect((await transport.send(SEAT, "after the turn")).ok).toBe(true);
     expect(sendText).toHaveBeenCalledTimes(3);
+  });
+
+  // workspaces-d7l (verify-qa2): text typed before the runner reads its input arrives split, and the gate cannot stop a copy. The record the
+  // launch writes before typing the runner's command is the runner's answer: starting. A path that types directly (a command, a shell
+  // escape, a send with the pump off) refuses, and types nothing, until this launch's runner is ready.
+  it("d7l: a seat whose launch is pending (the record the launch writes) refuses every direct send, 0 bytes; the ready runner takes it", async () => {
+    for (const runtime of ["pi", "omp"] as const) {
+      db.prepare("UPDATE nodes SET runtime = ?").run(runtime);
+      fs.writeFileSync(sidecarPath(), JSON.stringify(buildPendingRunnerState("l1", new Date().toISOString(), null)));
+      const { pi, omp, transport, sendText, sendKeys } = setup("node");
+      expect(await (runtime === "pi" ? pi : omp).sendReadiness(target)).toMatchObject({ state: "unknown", reason: "runner_starting", evidenceSource: "runner_sidecar", runtime });
+      for (const text of ["hello", "/compact", "!ls"]) {
+        const r = await transport.send(SEAT, text);
+        expect(r.ok, `${runtime} ${text}`).toBe(false);
+        expect(r.reason, `${runtime} ${text}`).toBe("target_runner_unverified");
+      }
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+      sidecar();
+      expect((await transport.send(SEAT, "hello")).ok).toBe(true);
+      expect(sendText).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("d7l: the runner's own not-ready records are not a pending launch: a transport restart (it ticks) and an exit are no runner answer, as before", async () => {
+    const { pi } = setup("node");
+    sidecar({ ready: false });
+    expect(await pi.sendReadiness(target)).toBeNull();
+    // As pi-runner main writes it when Pi cannot start: no aliveAt, an exit.
+    fs.writeFileSync(sidecarPath(), JSON.stringify({ ready: false, launchId: "l1", updatedAt: new Date().toISOString(), exited: { code: 127, at: new Date().toISOString() } }));
+    expect(await pi.sendReadiness(target)).toBeNull();
   });
 
   it("transport: an old-runner sidecar (no busy) falls back to the pane logic, which reads the question frame as a prompt (today's behaviour)", async () => {
