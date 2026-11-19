@@ -23,8 +23,8 @@ const expectedSites = new Map<string, string[]>([
   ["domain/tmux-option-defaults.ts", ["tmux_options.command_v"]],
 ]);
 
-const pluginVendorUrl = "https://github.com/mvschwarz/openrig-plugins/releases/latest/download/openrig-core.tar.gz";
-
+// workspaces-xuy: test runs turn the plugin auto-fetch off (OPENRIG_NO_PLUGIN_FETCH=1), so startup asks for nothing; any
+// request it makes is unexpected, and is recorded and refused here.
 async function createTestDaemon(
   options: Parameters<typeof createDaemon>[0],
 ): Promise<Awaited<ReturnType<typeof createDaemon>>> {
@@ -33,12 +33,11 @@ async function createTestDaemon(
   globalThis.fetch = async (input) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     fetchedUrls.push(url);
-    if (url !== pluginVendorUrl) throw new Error(`unexpected startup fetch: ${url}`);
-    return new Response(null, { status: 404 });
+    throw new Error(`unexpected startup fetch: ${url}`);
   };
   try {
     const daemon = await createDaemon(options);
-    expect(fetchedUrls).toEqual([pluginVendorUrl]);
+    expect(fetchedUrls).toEqual([]);
     return daemon;
   } finally {
     globalThis.fetch = originalFetch;
