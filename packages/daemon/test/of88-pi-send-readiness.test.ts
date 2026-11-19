@@ -232,6 +232,17 @@ describe("OF-88 adapter and transport: rig send to a Pi/OMP seat answered by the
     }
   });
 
+  it("d7l: a send that waits for idle waits on a pending launch, and types nothing if the runner is not ready in time", async () => {
+    fs.writeFileSync(sidecarPath(), JSON.stringify(buildPendingRunnerState("l1", new Date().toISOString(), null)));
+    const { transport, sendText, sendKeys } = setup("node");
+    const r = await transport.send(SEAT, "hello", { waitForIdleMs: 50 });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("target_activity_unknown");
+    expect(r.error).toContain("runner_starting");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
   it("d7l: the runner's own not-ready records are not a pending launch: a transport restart (it ticks) and an exit are no runner answer, as before", async () => {
     const { pi } = setup("node");
     sidecar({ ready: false });
