@@ -9,8 +9,11 @@
 //   3. a `reject(...)` inside a `setInterval` callback, under an `if` whose condition reads the clock.
 // A give-up must throw (or reject with) `waitTimedOut(...)`. A give-up that rethrows a caught value as it is (`throw error`) hands back
 // the failure the wait last saw, an assertion's diff or a command's own error; those are listed by name below, so a new one is a
-// decision and not a silent pass. Out of shape, and so not claimed: a one-shot `setTimeout(() => reject(...))`, which no structure
-// tells apart from a fake that simulates a slow dependency.
+// decision and not a silent pass.
+// Excluded as a class: one-shot setTimeout rejects are not censused. A `setTimeout(() => reject(...))` watchdog has no structure that
+// tells it apart from a fake that simulates a slow dependency (hc-seat-terminal-status's "late", plugin-vendor-service's "timeout").
+// The real ones known on 2026-11-19 were converted by hand (CoS ruling, verify-qa round 2): ps-summary-stall-red, slow-op-recorder,
+// helpers/scenario-surfaces and staging-docker-invoker's "parent did not end". A new one is not caught here.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";

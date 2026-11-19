@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { createDaemon } from "../src/startup.js";
 import { createSlowOpRequestMiddleware } from "../src/domain/slow-op-recorder.js";
+import { waitTimedOut } from "./helpers/wait-timeout.js";
 
 const expectedSites = new Map<string, string[]>([
   ["adapters/codex-resume.ts", ["codex.resume.profile_preflight"]],
@@ -241,7 +242,8 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
     try {
       const callbackEvidence = await new Promise<{ isMainThread: boolean; threadId: number }>((resolve, reject) => {
         let stdout = "";
-        const timeout = setTimeout(() => reject(new Error(`child callback did not begin: ${stderr}`)), COLD_START_BOUND_MS);
+        const waitStarted = Date.now();
+        const timeout = setTimeout(() => reject(waitTimedOut(`child callback did not begin: ${stderr}`, waitStarted)), COLD_START_BOUND_MS);
         child.stdout!.setEncoding("utf8");
         child.stdout!.on("data", (chunk: string) => {
           stdout += chunk;

@@ -224,9 +224,10 @@ describe.skipIf(process.platform === "win32")("makeRealStagingDocker — real pr
       await waitForPidFiles(pidFiles).catch((err: Error) => { throw new Error(`${err.message}; parent said: ${output}`); });
       if (trigger === "exit") parent.stdin!.write("go\n");
       else process.kill(-parent.pid!, trigger);
+      const waitStarted = Date.now();
       const end = await Promise.race([
         ended,
-        new Promise<never>((_, rejectEnd) => setTimeout(() => rejectEnd(new Error(`parent did not end: ${output}`)), 10_000)),
+        new Promise<never>((_, rejectEnd) => setTimeout(() => rejectEnd(waitTimedOut(`parent did not end: ${output}`, waitStarted)), 10_000)),
       ]);
       const survivors = await reapSurvivors(pidFiles);
       expect(survivors, `descendants that outlived the parent (${output.trim()})`).toEqual([]);
