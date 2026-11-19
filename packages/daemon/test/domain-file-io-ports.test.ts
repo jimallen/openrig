@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseDaemonState } from "../src/domain/crash-cart-probes.js";
+import { isProcessAlive } from "../src/adapters/node-crash-cart-probes.js";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const IO_IN_DOMAIN = [/from\s+["']node:/, /\bprocess\.(kill|getuid|env|cwd)\b/, /from\s+["'][^"']*adapters\//];
@@ -36,5 +37,11 @@ describe("workspaces-o9o.161: crash-cart's probes keep their rules in the domain
     expect(parseDaemonState(JSON.stringify({ pid: "4242", port: 41111 }))).toBeUndefined();
     expect(parseDaemonState(JSON.stringify({ pid: 4242 }))).toBeUndefined();
     expect(parseDaemonState("{not json")).toBeUndefined();
+  });
+
+  // pid 1 always exists; a process that is not root may not signal it, so kill(1, 0) answers EPERM, which still means alive.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("the adapter counts a live process it may not signal as alive, and its own as alive", () => {
+    expect(isProcessAlive(1)).toBe(true);
+    expect(isProcessAlive(process.pid)).toBe(true);
   });
 });
