@@ -83,6 +83,16 @@ console.log(JSON.stringify({env:{HOME:process.env.HOME,CLAUDE_CONFIG_DIR:dir}, s
   return { root, cwd, env, statePath, untouched, reads, writes, launches, adapter, binding, fsOps, tmux, db };
 }
 
+// Synthetic persistence/readiness boundaries for the orchestrator; orchestration, projection, bootstrap, prepare and the emitted child
+// command are the production path. Shared so the stub casts live in one place (daemon test cast baseline).
+function fakeSessionRegistry(db: Database.Database, statuses: string[]): SessionRegistry {
+  return { db, currentOccupantTenure: () => null,
+    updateStartupStatus: (_id: string, state: string) => statuses.push(state), updateResumeToken: () => {} } as unknown as SessionRegistry;
+}
+function fakeEventBus(db: Database.Database): EventBus {
+  return { db, emit: () => {} } as unknown as EventBus;
+}
+
 describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects the launch config home", () => {
   it.each(["fresh", "resume"])("classic %s child reading its inherited default home gets bootstrap there", async mode => {
     const f = fixture("alternate", false, true);
@@ -124,12 +134,8 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     f.db.exec(`CREATE TABLE node_permission_selections(node_id TEXT, runtime TEXT, mode TEXT);
       CREATE TABLE node_startup_context(node_id TEXT PRIMARY KEY, projection_entries_json TEXT, resolved_files_json TEXT, startup_actions_json TEXT, runtime TEXT);`);
     const statuses: string[] = [];
-    // Persistence/readiness boundaries are synthetic; orchestration, projection,
-    // bootstrap, prepare and the emitted child command are the production path.
-    const registry = { db: f.db, currentOccupantTenure: () => null,
-      updateStartupStatus: (_id: string, state: string) => statuses.push(state),
-      updateResumeToken: () => {} } as unknown as SessionRegistry;
-    const eventBus = { db: f.db, emit: () => {} } as unknown as EventBus;
+    const registry = fakeSessionRegistry(f.db, statuses);
+    const eventBus = fakeEventBus(f.db);
     f.adapter.checkReady = async () => ({ ready: true });
     const orchestrator = new StartupOrchestrator({ db: f.db, sessionRegistry: registry, eventBus, tmuxAdapter: f.tmux });
     const binding = { ...f.binding };
@@ -147,22 +153,65 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     for (const [file, before] of f.untouched) expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
   // workspaces-o9o.176 (verify-sec2): the bootstrap wrote .claude.json with plain writeFile, so a symlinked state file was written
-  // THROUGH — the link target gained hasCompletedOnboarding. Now it is refused, the target is untouched, and a bootstrap warning names it.
-  it("refuses a symlinked .claude.json state file: the link target is not written, and the launch warns naming the file", async () => {
+  // THROUGH — the link target gained hasCompletedOnboarding. Now it is refused, the target is untouched. Round 2: the refusal is a
+  // DELIVERY FAILURE naming the file (not a swallowed warning), so the launch aborts rather than starting with trust state unwritten.
+  it("refuses a symlinked .claude.json state file: the target is not written, and delivery FAILS naming the file", async () => {
     const f = fixture("alternate", true, false);
     const target = path.join(f.root, "someone-elses.json");
     fs.writeFileSync(target, JSON.stringify({ secret: "theirs" }));
     fs.mkdirSync(path.dirname(f.statePath), { recursive: true });
     fs.symlinkSync(target, f.statePath);
-    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await f.adapter.deliverStartup([], f.binding)).toEqual({ delivered: 0, failed: [] });
+    const result = await f.adapter.deliverStartup([], f.binding);
+    expect(result.delivered).toBe(0);
+    expect(result.failed).toEqual([{ path: f.statePath, error: expect.stringContaining("is a symbolic link") }]);
     expect(JSON.parse(fs.readFileSync(target, "utf8"))).toEqual({ secret: "theirs" });     // NOT written through
     expect(fs.lstatSync(f.statePath).isSymbolicLink()).toBe(true);                          // still the link, not replaced
     expect(f.writes).toEqual([]);
-    const logged = warn.mock.calls.map(c => String(c[0])).join("\n");
-    warn.mockRestore();
-    expect(logged).toContain(f.statePath);
-    expect(logged).toMatch(/symbolic link/);
+  });
+
+  // workspaces-o9o.176 (verify-sec2 round 2): prove through the WHOLE StartupOrchestrator that a guard refusal aborts the launch —
+  // launchHarness is never called — for both refusal shapes the reviewer named (the state file is a link; the seat's own home is a link).
+  async function runOrchestratorStart(f: ReturnType<typeof fixture>) {
+    f.db.exec(`CREATE TABLE IF NOT EXISTS node_permission_selections(node_id TEXT, runtime TEXT, mode TEXT);
+      CREATE TABLE IF NOT EXISTS node_startup_context(node_id TEXT PRIMARY KEY, projection_entries_json TEXT, resolved_files_json TEXT, startup_actions_json TEXT, runtime TEXT);`);
+    const statuses: string[] = [];
+    const registry = fakeSessionRegistry(f.db, statuses);
+    const eventBus = fakeEventBus(f.db);
+    f.adapter.checkReady = async () => ({ ready: true });
+    const launchSpy = vi.spyOn(f.adapter, "launchHarness");
+    const orchestrator = new StartupOrchestrator({ db: f.db, sessionRegistry: registry, eventBus, tmuxAdapter: f.tmux });
+    const result = await orchestrator.startNode({ rigId: "rig", nodeId: "node", sessionId: "session",
+      binding: f.binding, adapter: f.adapter,
+      plan: { runtime: "claude-code", cwd: f.cwd, entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
+      resolvedStartupFiles: [], startupActions: [], isRestore: false });
+    return { result, statuses, launchSpy };
+  }
+
+  it("StartupOrchestrator: a symlinked state file aborts the launch — launchHarness is never called and the link target is untouched", async () => {
+    const f = fixture("alternate", true, false);
+    const target = path.join(f.root, "someone-elses.json");
+    fs.writeFileSync(target, JSON.stringify({ secret: "theirs" }));
+    fs.mkdirSync(path.dirname(f.statePath), { recursive: true });
+    fs.symlinkSync(target, f.statePath);
+    const { result, launchSpy } = await runOrchestratorStart(f);
+    expect(result).toMatchObject({ ok: false });
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(target, "utf8"))).toEqual({ secret: "theirs" });
+    expect(f.launches).toEqual([]);
+  });
+
+  it("StartupOrchestrator: a symlinked managed seat home aborts the launch — launchHarness is never called and the home target is untouched", async () => {
+    const f = fixture("unset", true, false);
+    const realHome = path.join(f.root, "real-seat-home"); fs.mkdirSync(realHome);
+    const seatHome = path.join(f.root, "seat-home-link"); fs.symlinkSync(realHome, seatHome);
+    // Give the node a seat-owned Claude home (claude_config_dir) that is a symbolic link — the managed seat-home refusal.
+    f.db.exec("ALTER TABLE nodes ADD COLUMN claude_config_dir TEXT");
+    f.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = 'node'").run(seatHome);
+    const { result, launchSpy } = await runOrchestratorStart(f);
+    expect(result).toMatchObject({ ok: false });
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(realHome, ".claude.json"))).toBe(false);
+    expect(f.launches).toEqual([]);
   });
 
   it("classic bootstrap without cwd preserves known-home onboarding", () => {

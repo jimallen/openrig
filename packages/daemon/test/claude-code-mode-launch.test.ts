@@ -288,10 +288,12 @@ describe("launchHarness: a code_mode seat's launch pre-answers Code Mode's one-t
 
   // workspaces-o9o.176: the onboarding/trust bootstrap writes the SAME seat state file through the SAME shared rule, so a symlinked
   // seat home is refused there too (the guardDirs wiring in provisionManagedBootstrap), not only for the Code Mode answer.
-  it("the onboarding/trust bootstrap refuses a symlinked seat home (shared rule): the link target is not written", () => {
+  it("the onboarding/trust bootstrap refuses a symlinked seat home (shared rule): the refusal names the home and the target is not written", () => {
     const { files, ops } = memFs({ "/elsewhere/.claude.json": JSON.stringify({ shared: true }) }, { [SEAT_HOME]: "/elsewhere" });
-    expect(() => adapterWith(mockTmux(), ops, seatHomed()).ensureManagedBootstrap(binding({ nodeId: "n1", cwd: "/project", permissionMode: "bypassPermissions" })))
-      .toThrow(/is a symbolic link/);
+    // workspaces-o9o.176 (verify-sec2 round 2): a guard refusal is RETURNED (not thrown) so deliverStartup can turn it into a launch-
+    // aborting delivery failure naming the home; the link target stays untouched.
+    const outcome = adapterWith(mockTmux(), ops, seatHomed()).ensureManagedBootstrap(binding({ nodeId: "n1", cwd: "/project", permissionMode: "bypassPermissions" }));
+    expect(outcome.refusals).toEqual([{ path: SEAT_HOME, message: expect.stringMatching(/is a symbolic link/) }]);
     expect(JSON.parse(files.get("/elsewhere/.claude.json")!)).toEqual({ shared: true });
   });
 

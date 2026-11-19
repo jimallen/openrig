@@ -19,7 +19,14 @@ import { NO_STARTUP_SEND, resolveConcreteHint } from "../domain/runtime-adapter.
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
 import { claudeCodeModeEnv, claudeCodeModePrefix, codeModeAnswerPlan } from "../domain/claude-code-mode.js";
-import { writeGuardedClaudeState, type GuardedStateFs } from "./claude-state-write.js";
+import { writeGuardedClaudeState, type GuardedStateFs, type GuardedStateOutcome } from "./claude-state-write.js";
+
+/** What managed Claude bootstrap did not write: guard refusals (each aborts the launch as a delivery failure, naming the refused path)
+ *  and other non-fatal warnings (workspaces-o9o.176, verify-sec2 round 2). */
+interface ManagedBootstrapOutcome {
+  refusals: Array<{ path: string; message: string }>;
+  warnings: string[];
+}
 import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
@@ -215,7 +222,17 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
-    try { this.ensureManagedBootstrap(binding); } catch (err) {
+    // workspaces-o9o.176 (verify-sec2 round 2): a bootstrap GUARD REFUSAL — a DETECTED symbolic link or wrong-typed path at the trust
+    // state file or a seat's own home — becomes a delivery FAILURE naming the file, so the orchestrator aborts before launchHarness and
+    // the seat never starts with its trust state written through a link. Every other bootstrap problem, a file system that cannot guard
+    // included, keeps today's non-fatal warning (the real adapter always wires the no-follow primitives, so cannot-guard is test-only).
+    const bootstrapRefusals: Array<{ path: string; error: string }> = [];
+    try {
+      const bootstrap = this.ensureManagedBootstrap(binding);
+      for (const r of bootstrap.refusals) bootstrapRefusals.push({ path: r.path, error: r.message });
+      for (const w of bootstrap.warnings) console.error(`[openrig] claude bootstrap warning: ${w}`);
+    } catch (err) {
+      // An unforeseen throw from bootstrap stays non-fatal, as before (a guard refusal never throws — it is returned above).
       console.error(`[openrig] claude bootstrap warning: ${(err as Error).message}`);
     }
 
@@ -227,7 +244,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     const warnings: string[] = [];
     let delivered = 0;
-    const failed: Array<{ path: string; error: string }> = [];
+    const failed: Array<{ path: string; error: string }> = [...bootstrapRefusals];
 
     for (const file of files) {
       try {
@@ -457,9 +474,11 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return this.provisionCodeModeAccepted(binding);
   }
 
-  /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. */
-  ensureManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
-    this.provisionManagedBootstrap(binding);
+  /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. Returns the guard refusals (each a launch-aborting
+   *  delivery failure: the state file or a seat's own home is a DETECTED link or wrong-typed path) and the non-fatal warnings (any other
+   *  reason, a file system that cannot guard included — the real adapter always wires the no-follow primitives, so that is test-only). */
+  ensureManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): ManagedBootstrapOutcome {
+    return this.provisionManagedBootstrap(binding);
   }
 
   // -- Private helpers --
@@ -755,7 +774,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return resolveConcreteHint(path, content);
   }
 
-  private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
+  private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): ManagedBootstrapOutcome {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
     const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
@@ -765,7 +784,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const cwd = binding.cwd === undefined && managed && binding.nodeId
       ? managed.boundCwd(binding.nodeId) : binding.cwd;
     const statePaths: string[] = [];
-    const failures: string[] = [];
+    // workspaces-o9o.176 (verify-sec2 round 2): a guard refusal aborts the launch (returned as a delivery failure); any other reason is a
+    // non-fatal warning, as before.
+    const refusals: Array<{ path: string; message: string }> = [];
+    const warnings: string[] = [];
     // A seat's own Claude config home (nodes.claude_config_dir): its launch exports exactly that home on every path,
     // so its trust and onboarding state lives in <home>/.claude.json and nowhere else.
     const seatHome = binding.nodeId ? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId) ?? null : null;
@@ -787,17 +809,20 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd) : undefined;
         if (selected && !statePaths.includes(selected)) statePaths.push(selected);
       } catch (err) {
-        failures.push((err as Error).message);
+        // Resolving the daemon-selected home failed — not a guard refusal; keep today's non-fatal warning.
+        warnings.push((err as Error).message);
       }
     }
     // Each file is merged on its own: unmergeable state in one is preserved and reported,
     // and never stops the other from being provisioned. workspaces-o9o.176: a seat home's own state file guards that home against a
     // symbolic link too (the same rule the Code Mode writer uses); HOME and the daemon-selected home are not a seat's managed dir.
     for (const statePath of statePaths) {
-      const warning = this.provisionClaudeState(statePath, cwd, statePath === seatHomeStatePath ? [seatHome!] : []);
-      if (warning) failures.push(warning);
+      const outcome = this.provisionClaudeState(statePath, cwd, statePath === seatHomeStatePath ? [seatHome!] : []);
+      if (outcome.ok) continue;
+      if (outcome.refused) refusals.push({ path: outcome.path, message: outcome.message });
+      else warnings.push(outcome.message);
     }
-    if (failures.length > 0) throw new Error(failures.join("; "));
+    return { refusals, warnings };
   }
 
   /** workspaces-o9o.123: record Code Mode's one-time answer in the seat's OWN Claude home (nodes.claude_config_dir) where it is absent.
@@ -818,7 +843,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const statePath = nodePath.join(seatHome, ".claude.json");
     // workspaces-o9o.176: the same symlink-safe write rule as the bootstrap, shared. Only ABSENT keys are written; a present answer that
     // is not true is kept, with a warning. The seat home and the file are both refused if they are links.
-    const warning = writeGuardedClaudeState(this.guardedStateFs(), statePath, {
+    // Code Mode's answer is non-fatal by design: a guard refusal or any other reason is returned as a warning and the launch proceeds
+    // (it may stop at the picker). Only the trust bootstrap turns a refusal into a launch-aborting failure.
+    const outcome = writeGuardedClaudeState(this.guardedStateFs(), statePath, {
       subject: "Code Mode's one-time answer",
       prefix: "code_mode: ",
       guardDirs: [seatHome],
@@ -832,7 +859,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         return { changed: true };
       },
     });
-    return warning ? [warning] : [];
+    return outcome.ok ? [] : [outcome.message];
   }
 
   /** The seat-state writer's view of this adapter's file system: the strict JSON reader and the no-follow write. */
@@ -846,8 +873,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   /** Write the seat's onboarding and trust state, preserving every existing field, through the one symlink-safe rule (o9o.176): the
-   *  file is never written through a link, and a seat's own home (guardDirs) is refused if it is a link. Returns a warning, or null. */
-  private provisionClaudeState(statePath: string, cwd: string | null | undefined, guardDirs: readonly string[]): string | null {
+   *  file is never written through a link, and a seat's own home (guardDirs) is refused if it is a link. Returns the structured outcome;
+   *  the bootstrap turns a guard refusal into a launch-aborting delivery failure and keeps any other reason as a warning. */
+  private provisionClaudeState(statePath: string, cwd: string | null | undefined, guardDirs: readonly string[]): GuardedStateOutcome {
     return writeGuardedClaudeState(this.guardedStateFs(), statePath, {
       subject: "the Claude onboarding and trust state",
       guardDirs,
