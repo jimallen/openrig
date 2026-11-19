@@ -46,9 +46,19 @@ const callsNamed = (n: ts.Node, names: readonly string[]): boolean => ts.isCallE
 /** Reads the clock: `Date.now()`, `performance.now()`, or a WaitBound's `expired()` (which compares the clock with its deadline). */
 const readsClock = (n: ts.Node): boolean => contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
   && (x.expression.name.text === "now" || x.expression.name.text === "expired"));
-/** Asks a WaitBound (workspaces-o9o.174 part 3): `bound.expired()` or `bound.attempts(n)`, the bound scaled by the measured load. */
-const asksBound = (n: ts.Node | undefined): boolean => !!n && contains(n, (x) => ts.isCallExpression(x)
-  && ts.isPropertyAccessExpression(x.expression) && (x.expression.name.text === "expired" || x.expression.name.text === "attempts"));
+const isBoundCall = (x: ts.Node): boolean => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
+  && (x.expression.name.text === "expired" || x.expression.name.text === "attempts");
+const RELATIONAL = new Set([ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken]);
+/** Asks only a WaitBound (workspaces-o9o.174 part 3): the condition calls `bound.expired()` or `bound.attempts(n)`, reads no raw clock
+ *  (`Date.now()`, `performance.now()`), and every relational comparison in it (`<`, `<=`, `>`, `>=`) has a bound call on one side. A
+ *  mixed condition, `bound.expired() || Date.now() > oldEnd` or `i < bound.attempts(9) && i < 400`, is unscaled (verify-qa, round 1). */
+const asksBound = (n: ts.Node | undefined): boolean => {
+  if (!n || !contains(n, isBoundCall)) return false;
+  if (contains(n, (x) => ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression) && x.expression.name.text === "now")) return false;
+  return !contains(n, (x) => ts.isBinaryExpression(x) && RELATIONAL.has(x.operatorToken.kind)
+    && !contains(x.left, isBoundCall) && !contains(x.right, isBoundCall));
+};
 const loopCondition = (loop: ts.IterationStatement): ts.Node | undefined =>
   ts.isForStatement(loop) ? loop.condition : ts.isWhileStatement(loop) || ts.isDoStatement(loop) ? loop.expression : undefined;
 const sleeps = (n: ts.Node): boolean => contains(n, (x) => callsNamed(x, ["setTimeout", "sleep"]));
@@ -86,11 +96,11 @@ export function waitGiveUps(files: Record<string, string>): WaitGiveUp[] {
         const holder = n.parent;
         const before = ts.isBlock(holder) || ts.isSourceFile(holder) ? holder.statements[holder.statements.indexOf(n) - 1] : undefined;
         const guards = clockGuards(n, isLoop);
-        if (guards.length > 0) record(n, n.expression, guards.some(asksBound));
+        if (guards.length > 0) record(n, n.expression, guards.every(asksBound));
         else if (before && isLoop(before) && (sleeps(before) || readsClock(before))) record(n, n.expression, asksBound(loopCondition(before)));
       } else if (callsNamed(n, ["reject"])) {
         const guards = clockGuards(n, isIntervalCallback);
-        if (guards.length > 0) record(n, (n as ts.CallExpression).arguments[0], guards.some(asksBound));
+        if (guards.length > 0) record(n, (n as ts.CallExpression).arguments[0], guards.every(asksBound));
       }
       ts.forEachChild(n, visit);
     };
@@ -110,6 +120,12 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "counted-scaled.ts": "async function w() {\n  for (let i = 0; i < bound.attempts(9); i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
       "counted-fixed.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
       "interval-scaled.ts": "new Promise((resolve, reject) => { setInterval(() => { if (bound.expired()) reject(waitTimedOut('x', bound)); }, 5); });",
+      "mixed.ts": "async function w() { for (;;) { if (bound.expired() || Date.now() > oldEnd) throw waitTimedOut('x', bound); await nap(); } }",
+      "mixed-count.ts": "async function w() {\n  for (let i = 0; i < bound.attempts(9) && i < 400; i++) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "exit-or-bound.ts": "async function w() { for (;;) { if (gone !== null || bound.expired()) throw waitTimedOut('x', bound); await nap(); } }",
+      "clock-call.ts": "async function w() { for (;;) { if (bound.expired() || overdue(Date.now())) throw waitTimedOut('x', bound); await nap(); } }",
+      "flag-loop.ts": "async function w() {\n  while (!done) { await sleep(5); }\n  throw waitTimedOut('x', bound);\n}",
+      "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
       "clock-loop.ts": "async function w() { while (Date.now() < end) { if (ok()) return; } throw new Error('x'); }",
       "interval.ts": "new Promise((resolve, reject) => { const iv = setInterval(() => { if (ok()) resolve(); else if (Date.now() - s > 9) reject(new Error('x')); }, 5); });",
@@ -126,6 +142,12 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "counted-scaled.ts:3", kind: "evidenced" },
       { at: "counted-fixed.ts:3", kind: "unscaled" },
       { at: "interval-scaled.ts:1", kind: "evidenced" },
+      { at: "mixed.ts:1", kind: "unscaled" },
+      { at: "mixed-count.ts:3", kind: "unscaled" },
+      { at: "exit-or-bound.ts:1", kind: "evidenced" },
+      { at: "clock-call.ts:1", kind: "unscaled" },   // a raw clock read outside any comparison
+      { at: "flag-loop.ts:3", kind: "unscaled" },    // a sleeping loop whose condition asks no bound at all
+      { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
       { at: "clock-loop.ts:1", kind: "bare" },
       { at: "interval.ts:1", kind: "bare" },

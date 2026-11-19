@@ -23,12 +23,12 @@ describe("workspaces-o9o.174 part 3: a test wait's bound scales with the measure
     expect(waitBound(8000, reading(400), now)).toMatchObject({ ms: 32_000, scale: 4, deadline: 33_000 });
   });
 
-  it("expired() compares the clock with the scaled deadline; attempts() scales a counted loop", () => {
+  it("expired() is true from the scaled deadline itself; attempts() scales a counted loop", () => {
     let t = 0;
     const bound = waitBound(100, reading(50), () => t);
     expect(bound.ms).toBe(250);
-    t = 250; expect(bound.expired()).toBe(false);
-    t = 251; expect(bound.expired()).toBe(true);
+    t = 249; expect(bound.expired()).toBe(false);
+    t = 250; expect(bound.expired()).toBe(true);   // equality: the old `while (Date.now() < deadline)` stopped here too
     expect(bound.attempts(400)).toBe(1000);
     expect(waitBound(100, reading(1), () => 0).attempts(400)).toBe(400);
     expect(waitBound(100, reading(21), () => 0).attempts(10)).toBe(11);   // 10 x 1.05 rounds up: a scaled budget never shrinks below n x scale

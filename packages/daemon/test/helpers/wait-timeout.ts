@@ -27,7 +27,8 @@ export interface WaitBound {
   readonly reading: LoadReading;
   /** startedAt + ms. */
   readonly deadline: number;
-  /** True once the clock is past the deadline. */
+  /** True once the clock reaches the deadline (at it counts: a loop that ran `while (now < deadline)` stops there, and a give-up that
+   *  fired at `now > deadline` fires no later; verify-qa, part 3 round 1). */
   expired(): boolean;
   /** A counted poll loop's attempt budget, scaled the same way: ceil(n x scale). */
   attempts(n: number): number;
@@ -46,7 +47,7 @@ export function waitBound(baseMs: number, read: () => LoadReading = hostLoad, no
   const deadline = startedAt + ms;
   return {
     startedAt, baseMs, ms, scale, reading, deadline,
-    expired: () => now() > deadline,
+    expired: () => now() >= deadline,
     attempts: (n) => Math.ceil(n * scale),
   };
 }
