@@ -494,6 +494,13 @@ const PUMP_NUDGE_RESULT = "retained:pump";
 /** The fixed id of a plain nudge. */
 const PLAIN_NUDGE_PREFIX = "guard-nudge-";
 
+/** A queue item's wake: its id carries the item's id, put into the alphabet a gate marker carries, since a caller may choose the item's id
+ *  (`rig queue create --id`). Outside it the transport sends the wake past the pump (workspaces-d7l). Readers find the item by the row's
+ *  `audit_pointer`, never by this id. */
+function wakeIntentIdOf(qitemId: string): string {
+  return `${WAKE_INTENT_PREFIX}${markableIdPart(qitemId)}`;
+}
+
 /** A wake the pump has. `open`: it goes on, whatever the ladder does. */
 export type PumpedWake =
   | { readonly kind: "open"; readonly nudgeResult: string; readonly sinceMs: number }
@@ -1041,7 +1048,7 @@ export class QueueRepository {
     // read here rather than threaded through every staging caller.
     const successor = this.getById(successorQitemId);
     this.recordWakeIntent({
-      outboxId: `${WAKE_INTENT_PREFIX}${successorQitemId}`,
+      outboxId: wakeIntentIdOf(successorQitemId),
       auditPointer: successorQitemId,
       fromSession,
       toSession,
@@ -1147,7 +1154,7 @@ export class QueueRepository {
     // Reads the txn-visible (uncommitted) state on this connection.
     const src = this.getById(sourceQitemId);
     if (!src || !isTerminalState(src.state)) return; // not a terminal close
-    const intent = this.outbox.getById(`${WAKE_INTENT_PREFIX}${successorQitemId}`);
+    const intent = this.outbox.getById(wakeIntentIdOf(successorQitemId));
     if (!intent) {
       throw new QueueRepositoryError(
         "terminal_close_without_wake_intent",
@@ -1379,7 +1386,7 @@ export class QueueRepository {
       await this.maybeNudge(successorQitemId, destinationSession, nudge, sourceSession);
       return;
     }
-    await this.deliverWakeIntent(`${WAKE_INTENT_PREFIX}${successorQitemId}`);
+    await this.deliverWakeIntent(wakeIntentIdOf(successorQitemId));
   }
 
   /**
@@ -1717,7 +1724,7 @@ export class QueueRepository {
     // failure is recorded on the row; callers without an outbox retain their
     // existing best-effort path without claiming durability.
     if (this.outbox) {
-      if (wakeStaged) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${id}`);
+      if (wakeStaged) this.deliverWakeIntentAfterCommit(wakeIntentIdOf(id));
     } else {
       await this.maybeNudge(id, input.destinationSession, input.nudge, input.sourceSession);
     }
@@ -2065,7 +2072,7 @@ export class QueueRepository {
 
     // Closure and successor are persisted. Delivery is separate and recoverable
     // from the committed intent; a slow terminal must not hold the receipt.
-    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${newId}`);
+    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(wakeIntentIdOf(newId));
 
     return {
       closed: this.getByIdOrThrow(source.qitemId),
@@ -2236,7 +2243,7 @@ export class QueueRepository {
     }
 
     // Return the persisted closure and successor without awaiting terminal delivery.
-    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${newId}`);
+    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(wakeIntentIdOf(newId));
 
     return {
       closed: this.getByIdOrThrow(source.qitemId),

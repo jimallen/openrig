@@ -212,6 +212,16 @@ describe("a wake on a seat the pump serves", () => {
       expect(writes).toEqual([]);
     });
 
+    it("d7l: the wake of an item whose caller-chosen id holds `@` is the pump's, under an id a marker carries, and nothing is written", async () => {
+      const { qitemId } = await repo.create({ qitemId: "ask@team-2", sourceSession: "sender@hr", destinationSession: SEAT, body: "the work" });
+      await settle();
+      await pump.tick();
+      expect(rowsFor(qitemId).map((r) => r.outbox_id)).toEqual(["wake-intent-ask_40team-2"]);
+      expect(row("wake-intent-ask_40team-2")).toMatchObject({ class: "nudge", delivery_state: "pending", message_pump_owned: 1 });
+      expect(hopTexts.flat()).toContain("wake-intent-ask_40team-2");
+      expect(writes).toEqual([]);
+    });
+
     it("a wake that failed before the seat had a gate is handed over once: one row, then only its state", async () => {
       const { qitemId } = await baton(SEAT);
       db.prepare("DELETE FROM outbox_entries WHERE audit_pointer = ?").run(qitemId);
