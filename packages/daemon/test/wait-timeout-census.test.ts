@@ -269,6 +269,9 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       "proto.ts": "async function w() { const b11 = waitBound(9); Object.setPrototypeOf(b11, { expired: () => true }); for (;;) { if (b11.expired()) throw waitTimedOut('x', b11); await nap(); } }",
       "handed.ts": "async function w() { const b12 = waitBound(9); tamper(b12); for (;;) { if (b12.expired()) throw waitTimedOut('x', b12); await nap(); } }",
       "alias-shadowed.ts": "async function w() { const b13 = waitBound(9); const b14 = b13; Object.assign(b14, { expired: () => true }); for (;;) { if (b13.expired()) throw waitTimedOut('x', b13); await nap(); } }",
+      "deleted.ts": "async function w() { const b17 = waitBound(9); delete b17.expired; for (;;) { if (b17.expired()) throw waitTimedOut('x', b17); await nap(); } }",
+      "bumped.ts": "async function w() { const b18 = waitBound(9); b18.ms++; for (;;) { if (b18.expired()) throw waitTimedOut('x', b18); await nap(); } }",
+      "element-write.ts": "async function w() { const b19 = waitBound(9); b19['expired'] = () => true; for (;;) { if (b19.expired()) throw waitTimedOut('x', b19); await nap(); } }",
       "reads.ts": "async function w() { const b15 = waitBound(9); setTimeout(nap, b15.ms); const b16 = b15; for (;;) { if (b16.expired()) throw waitTimedOut(`x ${b15.deadline}`, b15); await nap(); } }",
       "nested.ts": "async function w() { for (;;) { if (Date.now() > end) { if (bound.expired()) throw waitTimedOut('x', bound); } await nap(); } }",
       "counted.ts": "async function w() {\n  for (let i = 0; i < 9; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 5)); }\n  throw new Error('x');\n}",
@@ -311,6 +314,9 @@ describe("workspaces-o9o.179: no daemon test wait gives up without its evidence"
       { at: "proto.ts:1", kind: "unscaled" },          // any other use: the census cannot see what tamper() or setPrototypeOf does
       { at: "handed.ts:1", kind: "unscaled" },
       { at: "alias-shadowed.ts:1", kind: "unscaled" }, // tampered through an alias, asked through the original
+      { at: "deleted.ts:1", kind: "unscaled" },
+      { at: "bumped.ts:1", kind: "unscaled" },
+      { at: "element-write.ts:1", kind: "unscaled" },
       { at: "reads.ts:1", kind: "evidenced" },         // reads, an alias and waitTimedOut are uses that leave it the bound
       { at: "nested.ts:1", kind: "unscaled" },       // every clock guard on the path must be the bound, not just the innermost
       { at: "counted.ts:3", kind: "bare" },
